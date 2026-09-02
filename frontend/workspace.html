@@ -32,8 +32,8 @@
 
   /* ── Style recipes ───────────────────────────────────────────────────────── */
   const HEADER_BAR =
-    "background:#ffffff;box-sizing:border-box;min-height:54px;flex-shrink:0;padding:8px 16px;" +
-    "display:flex;align-items:center;justify-content:flex-start;gap:12px;border-bottom:1px solid #cbd5e1;" +
+    "background:#ffffff;box-sizing:border-box;min-height:54px;flex-shrink:0;padding:8px 20px;" +
+    "display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #cbd5e1;" +
     "box-shadow:0 1px 3px rgba(0,0,0,0.06);overflow-x:auto;white-space:nowrap;";
   const BTN_BASE =
     "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;" +
@@ -80,28 +80,28 @@
 
   const topBar = App.el(
     '<header style="' + HEADER_BAR + '">' +
-      '<div style="display:flex;align-items:center;gap:10px;font-size:13px;color:#000000;white-space:nowrap;flex-shrink:0">' +
+      '<div style="display:flex;align-items:center;gap:12px;font-size:13px;color:#000000;white-space:nowrap;flex-shrink:0">' +
         '<span>Hello, <strong data-role="user-name" style="color:#000000;font-weight:700">' + esc(userEmail) + "</strong></span>" +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
         '<span>Task ID: <strong data-role="task-id" style="font-family:' + T.MONO + ';color:#000000;font-weight:700">—</strong></span>' +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
-        '<span style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Task description: <strong data-role="task-desc" style="color:#000000;font-weight:600">—</strong></span>' +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
+        '<span style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Task description: <strong data-role="task-desc" style="color:#000000;font-weight:600">—</strong></span>' +
+        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
         '<span style="white-space:nowrap">Task time: <strong data-role="timer-display" style="font-family:' + T.MONO + ';color:#1d4ed8;font-weight:700;letter-spacing:0.02em">00:00</strong> <span data-role="timer-total" style="color:#334155;font-weight:600">of 120 Min 00 Sec</span></span>' +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
-        '<div style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0">' +
-          '<button type="button" data-role="decline" data-hover="btn-default" style="' + BTN_OUTLINE + '">Decline task</button>' +
-          '<button type="button" data-role="release" data-hover="btn-default" style="' + BTN_OUTLINE + '">Release task</button>' +
-          '<button type="button" data-role="skip" data-hover="btn-default" style="' + BTN_OUTLINE + '">Skip task</button>' +
-        "</div>" +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+      "</div>" +
+      '<div style="display:flex;align-items:center;gap:8px;white-space:nowrap;flex-shrink:0;margin-left:auto">' +
+        '<button type="button" data-role="decline" data-hover="btn-default" style="' + BTN_OUTLINE + '">Decline task</button>' +
+        '<button type="button" data-role="release" data-hover="btn-default" style="' + BTN_OUTLINE + '">Release task</button>' +
+        '<button type="button" data-role="skip" data-hover="btn-default" style="' + BTN_OUTLINE + '">Skip task</button>' +
+        '<span style="color:#cbd5e1;font-weight:300;margin:0 2px">|</span>' +
         '<button type="button" data-role="stop-resume" data-hover="btn-default" style="' + BTN_OUTLINE + '">Stop and resume later</button>' +
-        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span style="color:#cbd5e1;font-weight:300;margin:0 2px">|</span>' +
         '<button type="button" data-role="save" data-hover="btn-default" data-tip="Save progress" style="' + BTN_SAVE + '"><span>Save</span></button>' +
         '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '"><span>Submit</span></button>' +
       "</div>" +
     "</header>",
   );
+
 
   const main = App.el(
     '<main data-grid="main" style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(440px,500px);gap:16px;padding:16px;flex:1;min-height:0;box-sizing:border-box"></main>',
@@ -262,14 +262,8 @@
       els.taskId.textContent = "—";
       els.taskDesc.textContent = "—";
     }
-
-    const editable = isEditable();
-    App.setDisabled(els.save, !editable);
-    App.setDisabled(els.submit, !editable);
-    App.setDisabled(els.decline, !editable);
-    App.setDisabled(els.release, !editable);
-    App.setDisabled(els.skip, !cur);
   }
+
 
   /* ── Centre panel ────────────────────────────────────────────────────────── */
   function paintCentre() {
@@ -460,18 +454,38 @@
   }
 
   async function saveDraftNow() {
+    if (!state.currentId) {
+      App.toast.warning("No active task is currently open.");
+      return;
+    }
+    if (!isEditable()) {
+      App.toast.info("This task is read-only or has already been submitted.");
+      return;
+    }
     autosave.cancel();
     await awaitPendingSave();
     autosave.cancel();
-    if (!isEditable()) return;
     await saveDraft({ silent: false });
   }
 
   /* ── Submit (with Confirmation Modal) ────────────────────────────────────── */
   async function submitTask() {
-    if (!isEditable() || !state.form) return;
+    if (!state.currentId) {
+      App.toast.warning("No active task is currently open.");
+      return;
+    }
+    if (!isEditable()) {
+      App.toast.info("This task is read-only or has already been submitted.");
+      return;
+    }
+    if (!state.form) {
+      App.toast.error("Annotation form is not ready.");
+      return;
+    }
     const errors = state.form.validate();
-    if (errors.length) return;
+    if (errors && errors.length) {
+      return;
+    }
 
     const ok = await App.confirm({
       title: "Submit annotation?",
@@ -484,7 +498,6 @@
     const taskId = state.currentId;
     const seq = state.loadSeq;
     App.setLoading(els.submit, true);
-    App.setDisabled(els.save, true);
     try {
       await awaitPendingSave();
       autosave.cancel();
@@ -514,7 +527,7 @@
         showSubmitErrors(list);
         App.toast.error(list.length === 1 ? list[0] : "Submission rejected: " + list.length + " issues.");
       } else {
-        App.toast.error(err.message);
+        App.toast.error(err.message || "Failed to submit annotation.");
       }
     } finally {
       App.setLoading(els.submit, false);
@@ -522,9 +535,13 @@
     }
   }
 
+
   /* ── Decline Task (with Modal) ───────────────────────────────────────────── */
   async function declineTask() {
-    if (!isEditable()) return;
+    if (!state.currentId) {
+      App.toast.warning("No active task is currently open.");
+      return;
+    }
     autosave.cancel();
     const taskId = state.currentId;
 
@@ -576,13 +593,16 @@
 
   /* ── Release Task (with Modal) ───────────────────────────────────────────── */
   async function releaseTask() {
-    if (!state.currentId) return;
+    if (!state.currentId) {
+      App.toast.warning("No active task is currently open.");
+      return;
+    }
     autosave.cancel();
     const taskId = state.currentId;
 
     const ok = await App.confirm({
       title: "Release task?",
-      content: "Releasing this task will discard your current draft and allow you to move to another task.",
+      content: "Releasing this task will discard your current draft, release your claim on the task, and return you to the Annotation Queues page.",
       okText: "Release task",
       danger: true,
     });
@@ -590,25 +610,26 @@
 
     App.setLoading(els.release, true);
     try {
-      const res = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/release", {
+      await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/release", {
         method: "POST",
       });
-      App.toast.success("Task released.");
-      if (res && res.next_task_id) {
-        await openTask(res.next_task_id);
-      } else {
-        renderCompletedQueue();
-      }
+      App.toast.success("Task released. Returning to annotation queues...");
+      setTimeout(() => {
+        location.href = "annotation-queues.html";
+      }, 350);
     } catch (err) {
       App.toast.error(err.message || "Failed to release task.");
-    } finally {
       App.setLoading(els.release, false);
     }
   }
 
+
   /* ── Skip Task (with Modal) ──────────────────────────────────────────────── */
   async function skipTask() {
-    if (!state.currentId) return;
+    if (!state.currentId) {
+      App.toast.warning("No active task is currently open.");
+      return;
+    }
     autosave.cancel();
     const taskId = state.currentId;
 
@@ -636,6 +657,7 @@
       App.setLoading(els.skip, false);
     }
   }
+
 
   /* ── Stop and Resume Later (with Modal) ──────────────────────────────────── */
   async function stopAndResumeLater() {
