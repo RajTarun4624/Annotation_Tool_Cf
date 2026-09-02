@@ -41,12 +41,13 @@
   const BTN_OUTLINE = BTN_BASE + "border:1px solid #94a3b8;background:#fff;color:#000000;";
   const BTN_PRIMARY = BTN_BASE + "padding:0 14px;border:0;background:#1d4ed8;color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08);";
   const BTN_SAVE = BTN_BASE + "padding:0 12px;border:1px solid #94a3b8;background:#fff;color:#000000;";
-  const CHIP =
-    "display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:600;" +
-    "border:1px solid #cbd5e1;background:#ffffff;color:#000000;white-space:nowrap;";
+  const BADGE_BASE =
+    "display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:600;" +
+    "line-height:1;white-space:nowrap;";
   const PROMPT_BOX =
-    "white-space:pre-wrap;word-break:break-word;font-size:14.5px;line-height:1.7;color:#000000;font-weight:500;background:#ffffff;" +
-    "border:1px solid #cbd5e1;border-radius:12px;padding:18px;margin:0;font-family:inherit;";
+    "white-space:pre-wrap;word-break:break-word;font-size:14.5px;line-height:1.7;color:#000000;font-weight:500;background:#f8fafc;" +
+    "border:1px solid #cbd5e1;border-radius:8px;padding:18px;margin:0;font-family:inherit;";
+
 
   const userEmail = profile.email || profile.username || profile.full_name || "Annotator";
 
@@ -310,19 +311,39 @@
     const task = cur.task;
     const mine = cur.my_annotation;
     const chars = task.data_length_chars != null ? task.data_length_chars : String(task.input_text || "").length;
+    function statusBadge(status) {
+      const s = String(status || "pending").toLowerCase();
+      const map = {
+        draft: { bg: "#fffbeb", border: "#fde68a", color: "#b45309", dot: "#f59e0b", label: "DRAFT" },
+        submitted: { bg: "#faf5ff", border: "#e9d5ff", color: "#7e22ce", dot: "#a855f7", label: "SUBMITTED" },
+        returned: { bg: "#fff1f2", border: "#fecdd3", color: "#be123c", dot: "#f43f5e", label: "RETURNED" },
+        approved: { bg: "#ecfdf5", border: "#a7f3d0", color: "#047857", dot: "#10b981", label: "APPROVED" },
+        active: { bg: "#eff6ff", border: "#bfdbfe", color: "#1d4ed8", dot: "#3b82f6", label: "ACTIVE" },
+        pending: { bg: "#f1f5f9", border: "#cbd5e1", color: "#334155", dot: "#94a3b8", label: "PENDING" },
+      };
+      const m = map[s] || map.pending;
+      return (
+        '<span style="' + BADGE_BASE + 'background:' + m.bg + ';border:1px solid ' + m.border + ';color:' + m.color + ';text-transform:uppercase;letter-spacing:.04em">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + m.dot + ';flex-shrink:0"></span>' +
+        esc(m.label || s) +
+        '</span>'
+      );
+    }
+
     const header = App.el(
       '<div style="display:flex;flex-direction:column;gap:10px;min-width:0">' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0">' +
         '<span style="font-size:17px;font-weight:700;color:#000000;word-break:break-word">' + esc(task.dataset || "Task Prompt") + "</span>" +
         "</div>" +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-        '<span style="' + CHIP + '">' + App.icon("AiOutlineFileText", { size: 12, color: "#334155" }) + esc(Number(chars).toLocaleString("en-US")) + " chars</span>" +
-        (task.data_length_bucket ? '<span style="' + CHIP + '">' + esc(task.data_length_bucket) + "</span>" : "") +
-        '<span style="' + CHIP + '">' + App.icon("AiOutlineTag", { size: 12, color: "#334155" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
-        App.statusPill(mine && mine.status ? mine.status : task.status) +
+        '<span style="' + BADGE_BASE + 'background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;">' + App.icon("AiOutlineFileText", { size: 12, color: "#1d4ed8" }) + esc(Number(chars).toLocaleString("en-US")) + " chars</span>" +
+        (task.data_length_bucket ? '<span style="' + BADGE_BASE + 'background:#faf5ff;border:1px solid #e9d5ff;color:#7e22ce;">' + esc(task.data_length_bucket) + "</span>" : "") +
+        '<span style="' + BADGE_BASE + 'background:#ecfdf5;border:1px solid #a7f3d0;color:#047857;">' + App.icon("AiOutlineTag", { size: 12, color: "#059669" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
+        statusBadge(mine && mine.status ? mine.status : task.status) +
         "</div></div>",
     );
     body.appendChild(header);
+
 
     const returned = task.status === "returned" || (mine && mine.status === "returned");
     if (returned) {

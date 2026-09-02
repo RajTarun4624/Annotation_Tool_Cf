@@ -541,9 +541,11 @@
 
     /* ---- derived output ---- */
     function paintOutput() {
+      if (!refs.output) return;
       const out = deriveOutput(state);
       refs.output.innerHTML = OUTPUT_KEYS.map((k) => outputChip(k, out[k])).join("");
     }
+
 
     /* ---- read-only ---- */
     function applyReadOnly() {
@@ -675,11 +677,13 @@
       asm.appendChild(h('<div style="' + HINT_STYLE + 'margin-top:-6px">J = jailbreak · I = prompt injection · L = prompt leakage. 0 = not applicable, 1 = low, 5 = critical.</div>'));
       asm.appendChild(singleField("intention", "Select intention"));
 
-      /* Output (derived) */
-      const outSec = section("Output (derived)");
-      refs.output = h('<div style="display:flex;flex-wrap:wrap;gap:8px"></div>');
-      outSec.appendChild(refs.output);
-      outSec.appendChild(h('<div style="' + HINT_STYLE + '">Computed from the selected attack types; stored server-side.</div>'));
+      /* Output (derived) - hidden from annotator form */
+      if (o.showOutput) {
+        const outSec = section("Output (derived)");
+        refs.output = h('<div style="display:flex;flex-wrap:wrap;gap:8px"></div>');
+        outSec.appendChild(refs.output);
+        outSec.appendChild(h('<div style="' + HINT_STYLE + '">Computed from the selected attack types; stored server-side.</div>'));
+      }
 
       // Error slots.
       App.qsa("[data-err]", root).forEach((node) => { refs.errEls[node.dataset.err] = node; });
@@ -691,6 +695,7 @@
       paintOutput();
       paintErrors();
     }
+
 
     render();
 
