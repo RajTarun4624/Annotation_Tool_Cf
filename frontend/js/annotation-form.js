@@ -332,15 +332,16 @@
 
   /* ── Styles ────────────────────────────────────────────────────────────── */
   const CHIP_BASE =
-    "display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:500;" +
+    "display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:600;" +
     "font-family:inherit;line-height:1;white-space:nowrap;transition:background .15s, color .15s, border-color .15s;user-select:none;";
-  const CHIP_OFF = "border:1px solid #e2e8f0;background:#fff;color:#475569;";
-  const CHIP_ON = "border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;";
-  const LABEL_STYLE = "display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px;line-height:1.3;";
-  const ERR_STYLE = "display:none;font-size:12px;color:#dc2626;margin-top:4px;line-height:1.35;";
-  const HINT_STYLE = "font-size:12px;color:#94a3b8;";
-  const GROUP_HEAD = "font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#64748b;margin-bottom:6px;";
-  const BOX_STYLE = "border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:rgba(255,255,255,0.6);";
+  const CHIP_OFF = "border:1px solid #cbd5e1;background:#fff;color:#0f172a;";
+  const CHIP_ON = "border:1px solid #2563eb;background:#eff6ff;color:#1d4ed8;";
+  const LABEL_STYLE = "display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:#000000;margin-bottom:6px;line-height:1.3;";
+  const ERR_STYLE = "display:none;font-size:12px;color:#dc2626;margin-top:4px;line-height:1.35;font-weight:600;";
+  const HINT_STYLE = "font-size:12px;color:#64748b;";
+  const GROUP_HEAD = "font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#000000;margin-bottom:6px;";
+  const BOX_STYLE = "border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;background:#ffffff;";
+
 
   function fieldWrap(key, labelHtml, control, hintHtml) {
     const wrap = h('<div data-field="' + esc(key) + '" style="min-width:0"></div>');

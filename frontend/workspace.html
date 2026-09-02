@@ -7,7 +7,7 @@
 <link rel="icon" href="public/favi.png">
 <style>
 /* Only what inline styles cannot express: responsive grid and collapse */
-@media (max-width:1080px){
+@media (max-width:1100px){
   [data-grid=main]{grid-template-columns:minmax(0,1fr)!important}
   [data-panel=right]{display:none!important}
   [data-slot=form]{display:block!important}
@@ -31,22 +31,22 @@
   const requestedTaskId = params.get("task") || "";
 
   /* ── Style recipes ───────────────────────────────────────────────────────── */
-  const GLASS_BAR =
-    "background:linear-gradient(160deg, rgba(255,255,255,0.85) 0%, rgba(238,243,255,0.7) 100%);" +
-    "backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);" +
-    "box-shadow:0 4px 16px rgba(43,44,124,0.06);border-bottom:1px solid rgba(226,232,240,0.8);";
+  const HEADER_BAR =
+    "background:#ffffff;box-sizing:border-box;min-height:54px;flex-shrink:0;padding:8px 16px;" +
+    "display:flex;align-items:center;justify-content:flex-start;gap:12px;border-bottom:1px solid #cbd5e1;" +
+    "box-shadow:0 1px 3px rgba(0,0,0,0.06);overflow-x:auto;white-space:nowrap;";
   const BTN_BASE =
     "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;" +
-    "font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;line-height:1;";
-  const BTN_OUTLINE = BTN_BASE + "border:1px solid #cbd5e1;background:#fff;color:#334155;";
-  const BTN_PRIMARY = BTN_BASE + "height:32px;padding:0 16px;border-radius:6px;border:0;background:#1d4ed8;color:#fff;font-weight:600;font-size:13px;box-shadow:0 1px 2px rgba(0,0,0,.05);";
-  const BTN_SAVE = BTN_BASE + "height:32px;padding:0 12px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;color:#0f172a;font-size:13px;";
+    "font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;line-height:1;";
+  const BTN_OUTLINE = BTN_BASE + "border:1px solid #94a3b8;background:#fff;color:#000000;";
+  const BTN_PRIMARY = BTN_BASE + "padding:0 14px;border:0;background:#1d4ed8;color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08);";
+  const BTN_SAVE = BTN_BASE + "padding:0 12px;border:1px solid #94a3b8;background:#fff;color:#000000;";
   const CHIP =
-    "display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;" +
-    "border:1px solid #e2e8f0;background:rgba(255,255,255,0.7);color:#475569;white-space:nowrap;";
+    "display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:600;" +
+    "border:1px solid #cbd5e1;background:#ffffff;color:#000000;white-space:nowrap;";
   const PROMPT_BOX =
-    "white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.65;color:#0f172a;background:rgba(255,255,255,0.6);" +
-    "border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:0;font-family:inherit;";
+    "white-space:pre-wrap;word-break:break-word;font-size:14.5px;line-height:1.7;color:#000000;font-weight:500;background:#ffffff;" +
+    "border:1px solid #cbd5e1;border-radius:12px;padding:18px;margin:0;font-family:inherit;";
 
   const userEmail = profile.email || profile.username || profile.full_name || "Annotator";
 
@@ -73,34 +73,31 @@
   document.title = "Workspace · Prompt Attack Annotation";
   document.body.setAttribute(
     "style",
-    "margin:0;min-width:320px;height:100vh;overflow:hidden;display:flex;flex-direction:column;background:" + T.BODY_BG +
-      ";font-family:" + T.FONT + ";color:#0f172a",
+    "margin:0;min-width:320px;height:100vh;overflow:hidden;display:flex;flex-direction:column;background:#f8fafc" +
+      ";font-family:" + T.FONT + ";color:#000000",
   );
 
   const topBar = App.el(
-    '<header style="' + GLASS_BAR + 'box-sizing:border-box;min-height:56px;flex-shrink:0;padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">' +
-      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px;color:#1e293b;min-width:0;flex:1 1 auto">' +
-        '<span>Hello, <strong data-role="user-name">' + esc(userEmail) + "</strong></span>" +
-        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
-        '<span>Customer ID: <strong data-role="customer-id" style="font-family:' + T.MONO + ';color:#334155;font-weight:600">—</strong></span>' +
-        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
-        '<span style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Task description: <span data-role="task-desc" style="color:#475569">—</span></span>' +
-        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
-        '<span style="white-space:nowrap">Task time: <strong data-role="timer-display" style="font-family:' + T.MONO + ';color:#2563eb;font-weight:700;letter-spacing:0.02em">00:00</strong> <span data-role="timer-total" style="color:#64748b">of 120 Min 00 Sec</span></span>' +
-        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
+    '<header style="' + HEADER_BAR + '">' +
+      '<div style="display:flex;align-items:center;gap:10px;font-size:13px;color:#000000;white-space:nowrap;flex-shrink:0">' +
+        '<span>Hello, <strong data-role="user-name" style="color:#000000;font-weight:700">' + esc(userEmail) + "</strong></span>" +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span>Task ID: <strong data-role="task-id" style="font-family:' + T.MONO + ';color:#000000;font-weight:700">—</strong></span>' +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Task description: <strong data-role="task-desc" style="color:#000000;font-weight:600">—</strong></span>' +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<span style="white-space:nowrap">Task time: <strong data-role="timer-display" style="font-family:' + T.MONO + ';color:#1d4ed8;font-weight:700;letter-spacing:0.02em">00:00</strong> <span data-role="timer-total" style="color:#334155;font-weight:600">of 120 Min 00 Sec</span></span>' +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
         '<div style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0">' +
           '<button type="button" data-role="decline" data-hover="btn-default" style="' + BTN_OUTLINE + '">Decline task</button>' +
           '<button type="button" data-role="release" data-hover="btn-default" style="' + BTN_OUTLINE + '">Release task</button>' +
           '<button type="button" data-role="skip" data-hover="btn-default" style="' + BTN_OUTLINE + '">Skip task</button>' +
         "</div>" +
-        '<span style="color:#cbd5e1;font-weight:300">|</span>' +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
         '<button type="button" data-role="stop-resume" data-hover="btn-default" style="' + BTN_OUTLINE + '">Stop and resume later</button>' +
-      "</div>" +
-      '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
-        '<button type="button" data-role="save" data-hover="btn-default" data-tip="Save your progress as a draft" style="' + BTN_SAVE + '">' +
-        App.icon("AiOutlineSave", { size: 14 }) + "<span>Save draft</span></button>" +
-        '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '">' +
-        App.icon("AiOutlineSend", { size: 14 }) + "<span>Submit</span></button>" +
+        '<span style="color:#94a3b8;font-weight:300">|</span>' +
+        '<button type="button" data-role="save" data-hover="btn-default" data-tip="Save progress" style="' + BTN_SAVE + '"><span>Save</span></button>' +
+        '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '"><span>Submit</span></button>' +
       "</div>" +
     "</header>",
   );
@@ -110,15 +107,15 @@
   );
 
   const centrePanel = App.el(
-    '<section data-panel="centre" style="' + T.GLASS + 'min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
+    '<section data-panel="centre" style="background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.04);min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
       '<div style="padding:18px 20px 20px;display:flex;flex-direction:column;gap:14px;min-width:0">' +
       '<div data-role="centre-body" style="display:flex;flex-direction:column;gap:14px;min-width:0"></div>' +
-      '<div data-slot="form" style="display:none;border-top:1px dashed #e2e8f0;padding-top:16px;min-width:0"></div>' +
+      '<div data-slot="form" style="display:none;border-top:1px dashed #cbd5e1;padding-top:16px;min-width:0"></div>' +
       "</div></section>",
   );
 
   const rightPanel = App.el(
-    '<section data-panel="right" style="' + T.GLASS + 'min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
+    '<section data-panel="right" style="background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.04);min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
       '<div data-role="right-body" style="padding:18px 20px 20px;min-width:0"></div>' +
       "</section>",
   );
@@ -139,7 +136,7 @@
   const R = (role, root) => App.qs('[data-role="' + role + '"]', root || document);
   const els = {
     userName: R("user-name", topBar),
-    customerId: R("customer-id", topBar),
+    taskId: R("task-id", topBar),
     taskDesc: R("task-desc", topBar),
     timerDisplay: R("timer-display", topBar),
     timerTotal: R("timer-total", topBar),
@@ -157,7 +154,7 @@
     form: R("form", formBlock),
   };
 
-  const narrowQuery = window.matchMedia("(max-width:1080px)");
+  const narrowQuery = window.matchMedia("(max-width:1100px)");
   function placeFormBlock() {
     const host = narrowQuery.matches ? els.formSlot : els.rightBody;
     if (formBlock.parentNode !== host) host.appendChild(formBlock);
@@ -253,15 +250,15 @@
 
     if (cur) {
       const meta = cur.meta_data || {};
-      const cid = meta.customer_id || meta.id || cur.dataset || String(cur.id || "").slice(0, 8);
-      els.customerId.textContent = cid;
-      els.customerId.title = cid;
+      const tid = cur.dataset || meta.id || meta.customer_id || String(cur.id || "").slice(0, 8);
+      els.taskId.textContent = tid;
+      els.taskId.title = tid;
 
       const desc = cur.dataset || (cur.input_text ? cur.input_text.slice(0, 45) + "…" : "Prompt Task");
       els.taskDesc.textContent = desc;
       els.taskDesc.title = cur.input_text || desc;
     } else {
-      els.customerId.textContent = "—";
+      els.taskId.textContent = "—";
       els.taskDesc.textContent = "—";
     }
 
@@ -278,17 +275,17 @@
     const keys = Object.keys(meta || {});
     if (!keys.length) return null;
     const wrap = App.el(
-      '<div style="border:1px solid #e2e8f0;border-radius:12px;background:rgba(255,255,255,0.5);overflow:hidden">' +
-        '<button type="button" data-role="toggle" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 14px;border:0;background:transparent;cursor:pointer;font-family:inherit;color:#334155;text-align:left">' +
-        '<span style="display:flex;align-items:center;gap:8px">' + App.icon("AiOutlineTable", { size: 14, color: "#64748b" }) +
-        '<span style="font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase">Seed metadata from sheet</span>' +
-        '<span style="font-family:' + T.MONO + ';font-size:11px;font-weight:700;background:#f1f5f9;color:#334155;padding:1px 6px;border-radius:4px">' + keys.length + "</span></span>" +
-        '<span data-role="chev" style="display:inline-flex;transition:transform .2s;color:#94a3b8">' + App.icon("AiOutlineDown", { size: 12 }) + "</span></button>" +
-        '<div data-role="body" style="display:none;border-top:1px solid #f1f5f9;overflow-x:auto">' +
-        '<table style="width:100%;border-collapse:collapse;font-size:13px;color:#0f172a">' +
+      '<div style="border:1px solid #cbd5e1;border-radius:12px;background:#ffffff;overflow:hidden">' +
+        '<button type="button" data-role="toggle" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 14px;border:0;background:#ffffff;cursor:pointer;font-family:inherit;color:#000000;text-align:left">' +
+        '<span style="display:flex;align-items:center;gap:8px">' + App.icon("AiOutlineTable", { size: 14, color: "#475569" }) +
+        '<span style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#000000">Seed metadata from sheet</span>' +
+        '<span style="font-family:' + T.MONO + ';font-size:11px;font-weight:700;background:#f1f5f9;color:#000000;padding:1px 6px;border-radius:4px;border:1px solid #cbd5e1">' + keys.length + "</span></span>" +
+        '<span data-role="chev" style="display:inline-flex;transition:transform .2s;color:#475569">' + App.icon("AiOutlineDown", { size: 12 }) + "</span></button>" +
+        '<div data-role="body" style="display:none;border-top:1px solid #e2e8f0;overflow-x:auto">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:13px;color:#000000">' +
         keys.map((k) =>
-          '<tr><td style="padding:7px 14px;border-bottom:1px solid #f1f5f9;font-family:' + T.MONO + ';font-size:12px;color:#475569;white-space:nowrap;width:1%;vertical-align:top">' + esc(k) + "</td>" +
-          '<td style="padding:7px 14px;border-bottom:1px solid #f1f5f9;word-break:break-word;vertical-align:top">' + esc(stringify(meta[k])) + "</td></tr>",
+          '<tr><td style="padding:8px 14px;border-bottom:1px solid #f1f5f9;font-family:' + T.MONO + ';font-size:12px;font-weight:600;color:#334155;white-space:nowrap;width:1%;vertical-align:top">' + esc(k) + "</td>" +
+          '<td style="padding:8px 14px;border-bottom:1px solid #f1f5f9;word-break:break-word;vertical-align:top;color:#000000;font-weight:500">' + esc(stringify(meta[k])) + "</td></tr>",
         ).join("") +
         "</table></div></div>",
     );
@@ -316,12 +313,12 @@
     const header = App.el(
       '<div style="display:flex;flex-direction:column;gap:10px;min-width:0">' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0">' +
-        '<span style="font-size:16px;font-weight:600;color:#0f172a;word-break:break-word">' + esc(task.dataset || "Task Prompt") + "</span>" +
+        '<span style="font-size:17px;font-weight:700;color:#000000;word-break:break-word">' + esc(task.dataset || "Task Prompt") + "</span>" +
         "</div>" +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-        '<span style="' + CHIP + '">' + App.icon("AiOutlineFileText", { size: 12, color: "#94a3b8" }) + esc(Number(chars).toLocaleString("en-US")) + " chars</span>" +
+        '<span style="' + CHIP + '">' + App.icon("AiOutlineFileText", { size: 12, color: "#334155" }) + esc(Number(chars).toLocaleString("en-US")) + " chars</span>" +
         (task.data_length_bucket ? '<span style="' + CHIP + '">' + esc(task.data_length_bucket) + "</span>" : "") +
-        '<span style="' + CHIP + '">' + App.icon("AiOutlineTag", { size: 12, color: "#94a3b8" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
+        '<span style="' + CHIP + '">' + App.icon("AiOutlineTag", { size: 12, color: "#334155" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
         App.statusPill(mine && mine.status ? mine.status : task.status) +
         "</div></div>",
     );
@@ -333,8 +330,8 @@
         App.el(
           '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e">' +
             App.icon("AiOutlineRollback", { size: 16, color: "#d97706", style: "flex-shrink:0;margin-top:1px" }) +
-            '<div style="min-width:0"><div style="font-size:13px;font-weight:600">Returned for rework by QA</div>' +
-            '<div style="font-size:13px;line-height:1.5;margin-top:2px;white-space:pre-wrap;word-break:break-word">' +
+            '<div style="min-width:0"><div style="font-size:13px;font-weight:700">Returned for rework by QA</div>' +
+            '<div style="font-size:13px;line-height:1.5;margin-top:2px;white-space:pre-wrap;word-break:break-word;color:#78350f">' +
             (task.qa_notes ? esc(task.qa_notes) : "No notes were provided. Review your annotation and resubmit.") + "</div></div></div>",
         ),
       );
@@ -353,8 +350,8 @@
     return (
       '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid ' + tone.border + ";background:" + tone.bg + ";color:" + tone.text + '">' +
       App.icon(iconName, { size: 15, style: "flex-shrink:0;margin-top:1px" }) +
-      '<div style="min-width:0;font-size:12.5px;line-height:1.45"><div style="font-weight:600">' + esc(title) + "</div>" +
-      (text ? "<div>" + esc(text) + "</div>" : "") + "</div></div>"
+      '<div style="min-width:0;font-size:12.5px;line-height:1.45"><div style="font-weight:700">' + esc(title) + "</div>" +
+      (text ? "<div style='font-weight:500'>" + esc(text) + "</div>" : "") + "</div></div>"
     );
   }
   function paintBanner() {
@@ -373,11 +370,11 @@
       html = bannerHtml("amber", "Returned by QA — editable", "Update the annotation below and submit it again." + (mine.updated_at ? " Last change " + App.fmt.dateTime(mine.updated_at) + "." : ""));
     } else if (mine && mine.status === "draft") {
       html = state.dirty
-        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save draft.")
+        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save.")
         : bannerHtml("blue", "Draft saved at " + App.fmt.time(mine.updated_at), "Your progress is stored. Submit when the annotation is complete.");
     } else {
       html = state.dirty
-        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save draft.")
+        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save.")
         : bannerHtml("slate", "In progress", "Fill in the form; drafts are saved automatically as you work.");
     }
     els.banner.innerHTML = html;
@@ -387,8 +384,8 @@
     els.submitErrors.style.display = "block";
     els.submitErrors.innerHTML =
       '<div style="padding:10px 12px;border-radius:10px;border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;font-size:12.5px;line-height:1.5">' +
-      '<div style="display:flex;align-items:center;gap:8px;font-weight:600">' + App.icon("AiOutlineCloseCircle", { size: 14 }) + "The server rejected the submission</div>" +
-      '<ul style="margin:6px 0 0;padding-left:18px">' + list.map((m) => "<li>" + esc(m) + "</li>").join("") + "</ul></div>";
+      '<div style="display:flex;align-items:center;gap:8px;font-weight:700">' + App.icon("AiOutlineCloseCircle", { size: 14 }) + "The server rejected the submission</div>" +
+      '<ul style="margin:6px 0 0;padding-left:18px;font-weight:500">' + list.map((m) => "<li>" + esc(m) + "</li>").join("") + "</ul></div>";
   }
 
   function mountForm() {
@@ -477,11 +474,19 @@
     await saveDraft({ silent: false });
   }
 
-  /* ── Submit ──────────────────────────────────────────────────────────────── */
+  /* ── Submit (with Confirmation Modal) ────────────────────────────────────── */
   async function submitTask() {
     if (!isEditable() || !state.form) return;
     const errors = state.form.validate();
     if (errors.length) return;
+
+    const ok = await App.confirm({
+      title: "Submit annotation?",
+      content: "Are you sure you want to submit your annotation for this task? Once submitted, it will be locked and sent for review.",
+      okText: "Submit",
+    });
+    if (!ok) return;
+
     autosave.cancel();
     const taskId = state.currentId;
     const seq = state.loadSeq;
@@ -524,7 +529,7 @@
     }
   }
 
-  /* ── Decline Task ────────────────────────────────────────────────────────── */
+  /* ── Decline Task (with Modal) ───────────────────────────────────────────── */
   async function declineTask() {
     if (!isEditable()) return;
     autosave.cancel();
@@ -539,14 +544,14 @@
     });
     const formBox = App.el(
       '<div style="display:flex;flex-direction:column;gap:12px">' +
-        '<p style="margin:0;font-size:13.5px;color:#475569">Please provide a reason for declining (e.g. invalid prompt, corrupted text, unsupported language):</p>' +
-        '<textarea data-role="reason" placeholder="Reason for declining (optional)..." style="width:100%;height:80px;padding:8px 10px;border-radius:8px;border:1px solid #cbd5e1;font-family:inherit;font-size:13px;box-sizing:border-box;resize:vertical;outline:none"></textarea>' +
+        '<p style="margin:0;font-size:13.5px;color:#000000;font-weight:500">Please provide a reason for declining (e.g. invalid prompt, corrupted text, unsupported language):</p>' +
+        '<textarea data-role="reason" placeholder="Reason for declining (optional)..." style="width:100%;height:80px;padding:8px 10px;border-radius:8px;border:1px solid #cbd5e1;font-family:inherit;font-size:13px;box-sizing:border-box;resize:vertical;outline:none;color:#000000"></textarea>' +
       "</div>",
     );
     modal.setBody(formBox);
 
     const footer = App.el('<div style="display:flex;justify-content:flex-end;gap:8px"></div>');
-    const cancelBtn = App.el('<button type="button" data-hover="btn-cancel" style="display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;color:#475569;font-size:13px;cursor:pointer">Cancel</button>');
+    const cancelBtn = App.el('<button type="button" data-hover="btn-cancel" style="display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;color:#000000;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>');
     cancelBtn.addEventListener("click", () => modal.close());
 
     const confirmBtn = App.el('<button type="button" data-hover="btn-modal-primary" style="display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 16px;border-radius:6px;border:0;background:#dc2626;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Decline</button>');
@@ -576,7 +581,7 @@
     modal.setFooter(footer);
   }
 
-  /* ── Release Task ────────────────────────────────────────────────────────── */
+  /* ── Release Task (with Modal) ───────────────────────────────────────────── */
   async function releaseTask() {
     if (!state.currentId) return;
     autosave.cancel();
@@ -584,7 +589,7 @@
 
     const ok = await App.confirm({
       title: "Release task?",
-      content: "Releasing this task will discard your current draft and move to another available task.",
+      content: "Releasing this task will discard your current draft and allow you to move to another task.",
       okText: "Release task",
       danger: true,
     });
@@ -608,11 +613,18 @@
     }
   }
 
-  /* ── Skip Task ───────────────────────────────────────────────────────────── */
+  /* ── Skip Task (with Modal) ──────────────────────────────────────────────── */
   async function skipTask() {
     if (!state.currentId) return;
     autosave.cancel();
     const taskId = state.currentId;
+
+    const ok = await App.confirm({
+      title: "Skip task?",
+      content: "Are you sure you want to skip this task and move to the next available task in the queue?",
+      okText: "Skip task",
+    });
+    if (!ok) return;
 
     App.setLoading(els.skip, true);
     try {
@@ -632,9 +644,17 @@
     }
   }
 
-  /* ── Stop and Resume Later ───────────────────────────────────────────────── */
+  /* ── Stop and Resume Later (with Modal) ──────────────────────────────────── */
   async function stopAndResumeLater() {
     autosave.cancel();
+
+    const ok = await App.confirm({
+      title: "Stop and resume later?",
+      content: "Are you sure you want to pause your session? Your current draft progress will be saved and you will return to Annotation Queues.",
+      okText: "Stop & Resume",
+    });
+    if (!ok) return;
+
     App.setLoading(els.stopResume, true);
     try {
       if (isEditable() && state.dirty) {
@@ -661,9 +681,9 @@
         '<div style="width:56px;height:56px;border-radius:50%;background:#ecfdf5;color:#059669;display:flex;align-items:center;justify-content:center">' +
           App.icon("AiOutlineCheckCircle", { size: 32 }) +
         "</div>" +
-        '<div style="font-size:18px;font-weight:700;color:#0f172a">All Assigned Tasks Completed!</div>' +
-        '<p style="margin:0;font-size:14px;color:#64748b;max-width:440px">You have completed all pending tasks for this queue. Your submitted annotations are stored and awaiting review.</p>' +
-        '<a href="annotation-queues.html" style="' + BTN_PRIMARY + 'text-decoration:none;height:36px;padding:0 20px;margin-top:8px">Return to Annotation Queues</a>' +
+        '<div style="font-size:18px;font-weight:700;color:#000000">All Assigned Tasks Completed!</div>' +
+        '<p style="margin:0;font-size:14px;color:#334155;max-width:440px;font-weight:500">You have completed all pending tasks for this queue. Your submitted annotations are stored and awaiting review.</p>' +
+        '<a href="annotation-queues.html" style="' + BTN_PRIMARY + 'text-decoration:none;height:36px;padding:0 20px;margin-top:8px;font-size:13px">Return to Annotation Queues</a>' +
       "</div>";
     els.form.innerHTML = "";
     els.banner.innerHTML = "";
