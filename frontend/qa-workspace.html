@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Review · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Only what inline styles cannot express: hover states and the responsive breakpoint (SPEC2 6.2/6.3). */
+  [data-hover=listrow]:not([data-selected]):hover{background:rgba(255,255,255,.62)!important}
+  [data-hover=linkbtn]:hover:not(:disabled){color:#1d4ed8!important;text-decoration:underline!important}
+  details[data-seed] > summary::-webkit-details-marker{display:none}
+  @media (max-width:1279px){
+    [data-grid=main]{grid-template-columns:260px minmax(0,1fr)!important}
+    [data-col=centre]{display:flex!important;flex-direction:column;gap:16px;min-height:0;overflow-y:auto}
+    [data-panel=centre],[data-panel=right]{overflow:visible!important;flex:none!important;min-height:auto!important}
+    [data-hide=narrow]{display:none!important}
+  }
+  @media (max-width:820px){
+    [data-grid=main]{grid-template-columns:minmax(0,1fr)!important;grid-template-rows:220px minmax(0,1fr)!important}
+    [data-hide=tight]{display:none!important}
+  }
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script src="js/annotation-form.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  // QA reviewers arrive from Annotation Queues; admins (queues permission) may open the workspace too (SPEC2 5.3 access).
+  const perms = (profile && profile.permissions) || [];
+  if (!perms.includes("annotation_queues") && !perms.includes("queues")) {
+    if (!App.requirePermission("annotation_queues")) return;
+  }
+
+  const { escapeHtml: esc, el, fmt, api, toast } = App;
+  const T = App.tokens;
+  const MONO = T.MONO;
+  const GLASS = T.GLASS;
+
+  /* ── Chromeless body (SPEC2 6.2) ─────────────────────────────────────── */
+  document.body.setAttribute(
+    "style",
+    "margin:0;min-width:320px;height:100vh;overflow:hidden;display:flex;flex-direction:column;background:" + T.BODY_BG +
+      ";font-family:" + T.FONT + ";color:#0f172a",
+  );
+
+  /* ── Constants ───────────────────────────────────────────────────────── */
+  const GLASS_BAR =
+    "background:linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(238,243,255,0.55) 100%);" +
+    "backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);" +
+    "box-shadow:0 8px 24px rgba(43,44,124,0.08), inset 0 1px 0 rgba(255,255,255,0.6);";
+  const BTN =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 15px;border-radius:8px;border:1px solid #cbd5e1;" +
+    "background:#fff;color:#0f172a;font-size:14px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
+  const BTN_PRIMARY = BTN + "border:0;background:#1d4ed8;color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.05);";
+  const BTN_DANGER_OUTLINE = BTN + "border:1px solid #fecaca;color:#b91c1c;background:#fff;font-weight:500;";
+  const BTN_SMALL = BTN.replace("height:32px;padding:0 15px;", "height:28px;padding:0 11px;font-size:13px;");
+  const LINK_BTN = "border:0;background:none;padding:0;font-family:inherit;font-size:12.5px;font-weight:600;color:#475569;cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:color .15s;";
+  const CHIP = "display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:500;background:rgba(255,255,255,0.7);border:1px solid #e2e8f0;color:#475569;white-space:nowrap;";
+  const PANEL = GLASS + "box-sizing:border-box;min-height:0;";
+  const PROMPT_BOX =
+    "white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.65;color:#0f172a;background:rgba(255,255,255,0.6);" +
+    "border:1px solid #e2e8f0;border-radius:12px;padding:16px;";
+  const CODE_BOX =
+    "margin:0;font-family:" + MONO + ";font-size:12px;line-height:1.55;color:#0f172a;background:rgba(255,255,255,0.7);border:1px solid #e2e8f0;" +
+    "border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;";
+  const TH = "background:rgba(248,250,252,0.8);color:#000;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:10px 8px;text-align:left;border-bottom:1px solid #e2e8f0;white-space:nowrap;vertical-align:bottom;";
+  const TD = "padding:8px;border-bottom:1px solid #f1f5f9;vertical-align:top;font-size:13px;line-height:1.45;";
+
+  // The ten customer agreement keys (SPEC2 §4) decide the task-level agreement badge.
+  const AGREEMENT_KEYS = [
+    "attack_type", "attack_subcategory", "output_jailbreak", "output_prompt_injection", "output_prompt_leakage",
+    "severity_J", "severity_I", "severity_L", "intention", "verified",
+  ];
+  // Comparison table rows (SPEC2 6.3) → {key, label, agreement key}.
+  const ROWS = [
+    { key: "data_type", label: "Data type", agr: "data_type" },
+    { key: "data_structure", label: "Data structure", agr: "data_structure" },
+    { key: "attack_type", label: "Attack type", agr: "attack_type" },
+    { key: "attack_subcategory", label: "Subcategory", agr: "attack_subcategory" },
+    { key: "domain", label: "Domain", agr: "domain" },
+    { key: "role", label: "Role", agr: "role" },
+    { key: "verified", label: "Verified", agr: "verified" },
+    { key: "language", label: "Language", agr: "language" },
+    { key: "document_edited", label: "Document edited", agr: "document_edited" },
+    { key: "severity_J", label: "Severity J", agr: "severity_J" },
+    { key: "severity_I", label: "Severity I", agr: "severity_I" },
+    { key: "severity_L", label: "Severity L", agr: "severity_L" },
+    { key: "intention", label: "Intention", agr: "intention" },
+    { key: "source", label: "Source", agr: "source" },
+    { key: "source_description", label: "Source description", agr: null },
+  ];
+  const OUTPUT_KEYS = [
+    { key: "jailbreak", label: "Jailbreak" },
+    { key: "prompt_injection", label: "Prompt injection" },
+    { key: "prompt_leakage", label: "Prompt leakage" },
+  ];
+
+  /* ── State ───────────────────────────────────────────────────────────── */
+  const params = new URLSearchParams(location.search);
+  const state = {
+    queueId: params.get("queue") || "",
+    taxonomy: null,
+    labels: {},          // field → { value → label }
+    queue: null,
+    source: null,
+    tasks: [],
+    tab: "awaiting",
+    search: "",
+    currentId: null,
+    detail: null,
+    form: null,
+    baseline: "",
+    dirty: false,
+    elapsed: 0,
+    timerRunning: false,
+    levels: {},          // taskId → "full" | "majority" | "conflict" (refined once the detail is loaded)
+    busy: false,
+    previewOpen: false,
+    previewStale: false,
+    listError: null,
+  };
+  let taskSeq = 0;
+  let listSeq = 0;
+
+  /* ── Small helpers ───────────────────────────────────────────────────── */
+  const displayName = profile.full_name || profile.username || profile.email || "Reviewer";
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const clock = (s) => pad2(Math.floor(s / 60)) + ":" + pad2(s % 60);
+  const toList = (v) => (Array.isArray(v) ? v.map((x) => String(x)) : typeof v === "string" && v ? v.split(",").map((x) => x.trim()).filter(Boolean) : []);
+  const toBool = (v) => (typeof v === "boolean" ? v : typeof v === "string" ? /^(true|1|yes|verified)$/i.test(v.trim()) : !!v);
+  const sevOf = (data, k) => {
+    const s = data && data.severity && typeof data.severity === "object" ? data.severity[k] : null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  function buildLabels(tax) {
+    const out = {};
+    if (!tax || typeof tax !== "object") return out;
+    ["data_type", "data_structure", "attack_type", "domain", "role", "language", "intention", "source"].forEach((f) => {
+      out[f] = {};
+      (Array.isArray(tax[f]) ? tax[f] : []).forEach((o) => { if (o && o.value != null) out[f][String(o.value)] = o.label == null ? String(o.value) : String(o.label); });
+    });
+    out.attack_subcategory = {};
+    const groups = tax.attack_subcategory && typeof tax.attack_subcategory === "object" ? tax.attack_subcategory : {};
+    Object.keys(groups).forEach((g) => {
+      (Array.isArray(groups[g]) ? groups[g] : []).forEach((o) => { if (o && o.value != null && out.attack_subcategory[o.value] == null) out.attack_subcategory[String(o.value)] = o.label == null ? String(o.value) : String(o.label); });
+    });
+    return out;
+  }
+  const labelFor = (field, value) => {
+    if (value == null || value === "") return "";
+    const map = state.labels[field] || {};
+    return map[String(value)] != null ? map[String(value)] : String(value);
+  };
+
+  /** Human cell text for the comparison table (taxonomy labels, lists joined with ", "). */
+  function cellText(key, data) {
+    const d = data && typeof data === "object" ? data : {};
+    if (key === "attack_type" || key === "attack_subcategory") {
+      const list = toList(d[key]).map((v) => labelFor(key, v));
+      return list.length ? list.join(", ") : "—";
+    }
+    if (key === "verified") return d.verified == null ? "—" : toBool(d.verified) ? "Verified" : "Unverified";
+    if (key === "document_edited") return d.document_edited == null ? "—" : toBool(d.document_edited) ? "Yes" : "No";
+    if (key.indexOf("severity_") === 0) return String(sevOf(d, key.slice(-1)));
+    if (key === "source_description") return d.source_description ? String(d.source_description) : "—";
+    const v = d[key];
+    return v == null || v === "" ? "—" : labelFor(key, v);
+  }
+  /** Comparable key so "differs from majority" ignores order / type noise. */
+  function cellKey(key, data) {
+    const d = data && typeof data === "object" ? data : {};
+    if (key === "attack_type" || key === "attack_subcategory") return toList(d[key]).slice().sort().join("|");
+    if (key === "verified" || key === "document_edited") return d[key] == null ? "" : String(toBool(d[key]));
+    if (key.indexOf("severity_") === 0) return String(sevOf(d, key.slice(-1)));
+    return d[key] == null ? "" : String(d[key]).trim();
+  }
+
+  /** Task-level agreement from the agreement dict: full / majority / conflict. */
+  function levelOf(agreement) {
+    if (!agreement || typeof agreement !== "object") return null;
+    const vals = AGREEMENT_KEYS.map((k) => agreement[k]);
+    if (vals.every((v) => v == null)) return null; // no agreement data yet (e.g. zero submissions) → "pending"
+    if (vals.every((v) => v === "full")) return "full";
+    if (vals.some((v) => v === "none")) return "conflict";
+    return "majority";
+  }
+  function levelPill(level) {
+    if (level === "finalised") return App.pill("finalised", "emerald", { dot: true });
+    if (level === "full") return App.pill("consensus", "emerald", { dot: true });
+    if (level === "majority") return App.pill("majority", "amber", { dot: true });
+    if (level === "conflict") return App.pill("conflict", "rose", { dot: true });
+    return App.pill("pending", "slate", { dot: true });
+  }
+  function taskLevel(t) {
+    if (!t) return null;
+    if (t.status === "approved") return "finalised";
+    if (state.levels[t.id]) return state.levels[t.id];
+    // Preferred: an explicit agreement_level on the list payload (requested from the backend; SPEC2 §4).
+    if (t.agreement_level === "full" || t.agreement_level === "majority") return t.agreement_level;
+    if (t.agreement_level === "none") return "conflict";
+    // Fallback: consensus_reached is TRUE for both full-agreement and majority-only tasks (SPEC2 §4), so a
+    // majority-only task shows "consensus" until it is opened and state.levels refines it (queue-tasks convention, §6.4).
+    if (t.consensus_reached === true) return "full";
+    if (t.consensus_reached === false) return "conflict";
+    return null;
+  }
+  function agreementPill(v) {
+    if (v === "full") return App.pill("full", "emerald");
+    if (v === "majority") return App.pill("majority", "amber");
+    if (v === "none") return App.pill("none", "rose");
+    return '<span style="color:#94a3b8">—</span>';
+  }
+  function outputChip(label, on) {
+    const t = App.TONES[on ? "emerald" : "slate"];
+    return (
+      '<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid ' + t.border +
+      ";background:" + t.bg + ";color:" + t.text + ';white-space:nowrap"><span style="width:7px;height:7px;border-radius:9999px;background:' + t.dot + ';flex-shrink:0"></span>' +
+      esc(label) + '<span style="font-family:' + MONO + ';font-weight:700">' + (on ? "true" : "false") + "</span></span>"
+    );
+  }
+  const outputOf = (a) => (a && a.output && typeof a.output === "object" ? a.output : AnnotationForm.deriveOutput(a && a.data));
+  const chip = (html, extra) => '<span style="' + CHIP + (extra || "") + '">' + html + "</span>";
+  const awaiting = () => state.tasks.filter((t) => t.status !== "approved");
+  const finalised = () => state.tasks.filter((t) => t.status === "approved");
+  const isEditable = () => !!(state.detail && state.detail.editable);
+
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  const shell = el(
+    '<div style="display:flex;flex-direction:column;height:100vh;min-height:0;overflow:hidden">' +
+      // Top bar
+      '<header style="' + GLASS_BAR + 'height:60px;box-sizing:border-box;flex-shrink:0;padding:0 16px;display:flex;align-items:center;gap:16px;border-bottom:1px solid rgba(255,255,255,0.7);position:relative;z-index:5">' +
+        '<a href="annotation-queues.html" data-hover="btn-default" style="' + BTN + 'text-decoration:none;flex-shrink:0">' + App.icon("AiOutlineArrowLeft", { size: 14 }) + '<span data-hide="tight">Annotation Queues</span></a>' +
+        '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+          '<span id="q-name" style="font-size:15px;font-weight:600;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px">Loading…</span>' +
+          "<span>" + App.typePill("qa") + "</span>" +
+        "</div>" +
+        '<div data-hide="narrow" style="flex:1;display:flex;align-items:center;justify-content:center;gap:12px;min-width:0">' +
+          '<span id="q-counts" style="font-size:13px;color:#475569;white-space:nowrap">Awaiting review: — · Finalised: —</span>' +
+          '<div id="q-progress" style="width:160px;flex-shrink:0"></div>' +
+          '<span id="q-progress-text" style="font-size:12px;color:#64748b;white-space:nowrap"></span>' +
+        "</div>" +
+        '<div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+          '<span id="timer" title="Time spent on this task" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;font-family:' + MONO + ';font-weight:700;font-size:12px;line-height:1;font-variant-numeric:tabular-nums;background:rgba(100,116,139,0.08);border:1px solid rgba(100,116,139,0.2);color:#64748b;backdrop-filter:blur(12px) saturate(140%);-webkit-backdrop-filter:blur(12px) saturate(140%);box-shadow:0 2px 10px rgba(43,44,124,0.08)">' +
+            App.icon("AiOutlineClockCircle", { size: 12 }) + "<span>00:00</span></span>" +
+          '<button type="button" id="btn-return" data-hover="btn-danger-outline" style="' + BTN_DANGER_OUTLINE + '">' + App.icon("AiOutlineRollback", { size: 14 }) + "Return for rework</button>" +
+          '<button type="button" id="btn-final" data-hover="btn-primary" style="' + BTN_PRIMARY + '">' + App.icon("AiOutlineCheckCircle", { size: 14 }) + "Submit final</button>" +
+          '<span data-hide="tight" title="' + esc(displayName) + '" style="display:inline-flex;align-items:center;gap:8px;border:1px solid #e2e8f0;background:rgba(255,255,255,0.7);border-radius:12px;padding:4px 10px 4px 4px;max-width:200px">' +
+            App.avatarInitial(displayName, 28) + '<span style="font-size:13px;font-weight:600;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(displayName) + "</span></span>" +
+        "</div>" +
+      "</header>" +
+      // Main grid
+      '<main data-grid="main" style="display:grid;grid-template-columns:300px minmax(0,1fr) 440px;gap:16px;padding:16px;flex:1;min-height:0;box-sizing:border-box">' +
+        '<section data-panel="left" style="' + PANEL + 'display:flex;flex-direction:column;padding:14px;gap:10px;overflow:hidden">' +
+          '<div id="list-search"></div>' +
+          '<div id="list-tabs"></div>' +
+          '<div id="list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin:0 -4px;padding:0 4px"></div>' +
+        "</section>" +
+        '<div data-col="centre" style="display:contents">' +
+          '<section data-panel="centre" id="centre" style="' + PANEL + 'overflow-y:auto;padding:20px"></section>' +
+          '<section data-panel="right" id="right" style="' + PANEL + 'overflow-y:auto;padding:20px"></section>' +
+        "</div>" +
+      "</main>" +
+    "</div>",
+  );
+  document.body.appendChild(shell);
+  App.tooltipsInit();
+
+  const $ = (id) => document.getElementById(id);
+  const timerEl = $("timer");
+  const btnReturn = $("btn-return");
+  const btnFinal = $("btn-final");
+  const listEl = $("list");
+  const centreEl = $("centre");
+  const rightEl = $("right");
+
+  /* ── Timer ───────────────────────────────────────────────────────────── */
+  function paintTimer() {
+    timerEl.lastElementChild.textContent = clock(state.elapsed);
+    const on = state.timerRunning;
+    timerEl.style.background = on ? "rgba(37,99,235,0.08)" : "rgba(100,116,139,0.08)";
+    timerEl.style.borderColor = on ? "rgba(37,99,235,0.21)" : "rgba(100,116,139,0.2)";
+    timerEl.style.color = on ? "#2563eb" : "#64748b";
+    timerEl.title = on ? "Time spent on this task" : "Timer paused (read-only)";
+  }
+  setInterval(() => {
+    if (!state.timerRunning) return;
+    state.elapsed += 1;
+    timerEl.lastElementChild.textContent = clock(state.elapsed);
+  }, 1000);
+
+  /* ── Top bar counts ──────────────────────────────────────────────────── */
+  function paintHeader() {
+    const q = state.queue || {};
+    $("q-name").textContent = q.name || (state.queueId ? "QA queue" : "No queue selected");
+    $("q-name").title = q.name || "";
+    const n = awaiting().length;
+    const m = finalised().length;
+    const total = n + m;
+    $("q-counts").textContent = "Awaiting review: " + n + " · Finalised: " + m;
+    $("q-progress").innerHTML = App.progress(total ? (m / total) * 100 : 0, "#7c3aed");
+    $("q-progress-text").textContent = m + "/" + total + " reviewed";
+    document.title = (q.name ? q.name + " · " : "") + "QA Review · Prompt Attack Annotation";
+  }
+  function paintActions() {
+    const editable = isEditable() && !state.busy;
+    App.setDisabled(btnReturn, !editable);
+    App.setDisabled(btnFinal, !editable);
+  }
+
+  /* ── Left panel: search + tabs + list ────────────────────────────────── */
+  const searchBox = App.searchBox({
+    placeholder: "Search dataset or prompt…",
+    onInput: (v) => { state.search = v.trim().toLowerCase(); paintList(); },
+  });
+  $("list-search").appendChild(searchBox);
+
+  function paintTabs() {
+    App.tabs($("list-tabs"), {
+      items: [
+        { key: "awaiting", label: "Awaiting (" + awaiting().length + ")" },
+        { key: "finalised", label: "Finalised (" + finalised().length + ")" },
+      ],
+      active: state.tab,
+      activeStyle: "tint",
+      onChange: (k) => { state.tab = k; paintList(); },
+    });
+  }
+
+  function paintList() {
+    const rows = (state.tab === "finalised" ? finalised() : awaiting()).filter((t) => {
+      if (!state.search) return true;
+      return (String(t.dataset || "") + " " + String(t.preview || "")).toLowerCase().includes(state.search);
+    });
+    listEl.innerHTML = "";
+    if (state.listError) {
+      const box = el(
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:28px 8px;text-align:center;color:#64748b;font-size:13px">' +
+          App.icon("AiOutlineWarning", { size: 22, color: "#f59e0b" }) + "<div>" + esc(state.listError) + "</div>" +
+          '<button type="button" data-hover="btn-default" style="' + BTN_SMALL + '">' + App.icon("AiOutlineReload", { size: 13 }) + "Retry</button></div>",
+      );
+      box.querySelector("button").addEventListener("click", () => loadList().then(() => { if (!state.listError && !state.currentId) selectDefault(); }));
+      listEl.appendChild(box);
+      return;
+    }
+    if (!rows.length) {
+      listEl.innerHTML = App.emptyState(
+        state.search ? "No tasks match your search" : state.tab === "finalised" ? "Nothing finalised yet" : "No tasks awaiting review",
+      );
+      return;
+    }
+    rows.forEach((t) => {
+      const selected = t.id === state.currentId;
+      const row = el(
+        '<div role="button" tabindex="0" data-task-id="' + esc(t.id) + '" data-hover="listrow"' + (selected ? " data-selected" : "") +
+          ' style="display:flex;flex-direction:column;gap:4px;padding:9px 11px;border-radius:12px;cursor:pointer;transition:background .15s;min-width:0;' +
+          "background:" + (selected ? "rgba(29,78,216,0.10)" : "transparent") + '">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0">' +
+            '<span style="font-size:13px;font-weight:600;color:#0f172a;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+              '<span style="color:#64748b;font-family:' + MONO + ';font-weight:600">#' + esc(t.sequence == null ? "?" : t.sequence) + "</span> · " + esc(t.dataset || "—") + "</span>" +
+            '<span style="flex-shrink:0">' + levelPill(taskLevel(t)) + "</span>" +
+          "</div>" +
+          '<div style="font-size:12px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.preview || "(empty prompt)") + "</div>" +
+        "</div>",
+      );
+      const open = () => openTask(t.id);
+      row.addEventListener("click", open);
+      row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+      listEl.appendChild(row);
+    });
+  }
+
+  function paintAll() {
+    paintHeader();
+    paintTabs();
+    paintList();
+    paintActions();
+  }
+
+  /* ── Load queue list ─────────────────────────────────────────────────── */
+  async function loadList(opts) {
+    const o = opts || {};
+    const seq = ++listSeq;
+    if (!state.queueId) {
+      state.listError = "Open this page from Annotation Queues (missing ?queue=…).";
+      paintAll();
+      return;
+    }
+    if (!state.tasks.length) listEl.innerHTML = App.skeleton(6);
+    try {
+      const res = await api("/workspace/qa/" + encodeURIComponent(state.queueId));
+      if (seq !== listSeq) return;
+      state.queue = res.queue || null;
+      state.source = res.source_queue || null;
+      state.tasks = (Array.isArray(res.tasks) ? res.tasks : []).slice().sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+      state.listError = null;
+      // Keep refined levels only for tasks that are still awaiting (a returned task disappears from the list).
+      const ids = new Set(state.tasks.map((t) => t.id));
+      Object.keys(state.levels).forEach((k) => { if (!ids.has(k)) delete state.levels[k]; });
+      if (state.currentId && !ids.has(state.currentId) && !o.keepCurrent) clearTask();
+    } catch (err) {
+      if (seq !== listSeq) return;
+      state.listError = err.message || "Unable to load the QA queue.";
+      toast.error(state.listError);
+    }
+    paintAll();
+  }
+
+  function selectDefault() {
+    const first = awaiting()[0] || finalised()[0];
+    if (first) {
+      state.tab = first.status === "approved" ? "finalised" : "awaiting";
+      paintTabs();
+      return openTask(first.id, { force: true });
+    }
+    clearTask();
+    paintAll();
+    return Promise.resolve();
+  }
+
+  /* ── Task detail ─────────────────────────────────────────────────────── */
+  function destroyForm() {
+    if (state.form) { try { state.form.destroy(); } catch (e) { /* ignore */ } }
+    state.form = null;
+  }
+  function clearTask() {
+    destroyForm();
+    state.currentId = null;
+    state.detail = null;
+    state.dirty = false;
+    state.timerRunning = false;
+    state.elapsed = 0;
+    state.previewOpen = false;
+    paintTimer();
+    centreEl.innerHTML = App.emptyState(
+      awaiting().length ? "Select a task on the left to start reviewing." : "No tasks awaiting review in this queue.",
+    );
+    rightEl.innerHTML =
+      '<div style="display:flex;flex-direction:column;gap:12px">' + App.sectionLabel("Final annotation") +
+      '<div style="font-size:13px;color:#64748b;line-height:1.55">The final form appears here once a task is selected. It is pre-filled with the majority answer across annotators.</div></div>';
+    paintActions();
+  }
+
+  async function openTask(id, opts) {
+    const o = opts || {};
+    if (!id) return;
+    if (id === state.currentId && !o.force) return;
+    if (!o.force && state.dirty && isEditable()) {
+      const ok = await App.confirm({
+        title: "Discard unsaved changes?",
+        content: "Your edits to the final annotation have not been submitted.",
+        okText: "Discard",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    const seq = ++taskSeq;
+    destroyForm();
+    state.currentId = id;
+    state.detail = null;
+    state.dirty = false;
+    state.timerRunning = false;
+    state.elapsed = 0;
+    state.previewOpen = false;
+    state.previewStale = false;
+    paintTimer();
+    paintList();
+    paintActions();
+    centreEl.innerHTML = App.skeleton(8);
+    rightEl.innerHTML = App.skeleton(10);
+    try {
+      const res = await api("/workspace/qa/tasks/" + encodeURIComponent(id));
+      if (seq !== taskSeq) return;
+      state.detail = res || {};
+      const lvl = levelOf(state.detail.agreement);
+      if (lvl) state.levels[id] = lvl;
+      // Keep the list row in sync with the freshly loaded status.
+      const row = state.tasks.find((t) => t.id === id);
+      if (row && state.detail.task) {
+        row.status = state.detail.task.status || row.status;
+        row.finalized_by_name = state.detail.task.finalized_by_name;
+        row.finalized_at = state.detail.task.finalized_at;
+        if (typeof state.detail.consensus_reached === "boolean") row.consensus_reached = state.detail.consensus_reached;
+      }
+      renderCentre();
+      renderRight();
+      state.timerRunning = isEditable();
+      paintTimer();
+      paintAll();
+    } catch (err) {
+      if (seq !== taskSeq) return;
+      toast.error(err.message || "Unable to load the task.");
+      centreEl.innerHTML =
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 8px;text-align:center;color:#64748b;font-size:13.5px">' +
+        App.icon("AiOutlineWarning", { size: 24, color: "#f59e0b" }) + "<div>" + esc(err.message || "Unable to load the task.") + "</div></div>";
+      rightEl.innerHTML = "";
+      paintActions();
+    }
+  }
+
+  /* ── Centre: prompt card + comparison table ──────────────────────────── */
+  function renderCentre() {
+    const d = state.detail || {};
+    const task = d.task || {};
+    const anns = (Array.isArray(d.annotations) ? d.annotations : []).slice().sort((a, b) => (a.slot || 0) - (b.slot || 0));
+    const majority = d.majority && typeof d.majority === "object" ? d.majority : {};
+    const agreement = d.agreement && typeof d.agreement === "object" ? d.agreement : {};
+    const level = levelOf(agreement);
+    const required = task.required_annotators || (state.source && state.source.required_annotators) || anns.length || 0;
+    const chars = task.data_length_chars != null ? task.data_length_chars : String(task.input_text || "").length;
+    const meta = task.meta_data && typeof task.meta_data === "object" ? task.meta_data : {};
+    const metaKeys = Object.keys(meta);
+
+    const wrap = el('<div style="display:flex;flex-direction:column;gap:16px;min-width:0"></div>');
+
+    // Header row
+    wrap.appendChild(el(
+      '<div style="display:flex;flex-direction:column;gap:10px">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0">' +
+          '<span style="font-size:16px;font-weight:600;color:#0f172a;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(task.dataset || "Task") + "</span>" +
+          '<span style="font-family:' + MONO + ';font-size:12px;color:#64748b">#' + esc(task.sequence == null ? "?" : task.sequence) + "</span>" +
+          "<span>" + App.statusPill(task.status || "submitted") + "</span>" +
+          "<span>" + levelPill(task.status === "approved" ? "finalised" : level) + "</span>" +
+        "</div>" +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          chip(esc(Number(chars).toLocaleString("en-US")) + " chars") +
+          (task.data_length_bucket ? chip(esc(task.data_length_bucket)) : "") +
+          (task.source ? chip(App.icon("AiOutlineTag", { size: 12, color: "#94a3b8" }) + esc(labelFor("source", task.source))) : "") +
+          chip(App.icon("AiOutlineTeam", { size: 12, color: "#94a3b8" }) + esc((task.submitted_count != null ? task.submitted_count : anns.length) + "/" + required) + " annotators submitted") +
+        "</div>" +
+      "</div>",
+    ));
+
+    // Prompt
+    wrap.appendChild(el('<div style="' + PROMPT_BOX + '">' + (task.input_text ? esc(task.input_text) : '<span style="color:#94a3b8">(empty prompt)</span>') + "</div>"));
+
+    // Seed metadata (collapsible)
+    if (metaKeys.length) {
+      wrap.appendChild(el(
+        '<details data-seed style="border:1px solid #e2e8f0;border-radius:12px;background:rgba(255,255,255,0.5)">' +
+          '<summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;font-size:12px;font-weight:600;color:#475569;user-select:none">' +
+            "<span>Seed metadata from sheet · " + metaKeys.length + "</span>" +
+            '<span data-chevron style="display:inline-flex;transition:transform .2s;line-height:0">' + App.icon("AiOutlineDown", { size: 12, color: "#94a3b8" }) + "</span></summary>" +
+          '<div style="padding:0 14px 12px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">' +
+            metaKeys.map((k) =>
+              '<tr><td style="padding:5px 8px 5px 0;color:#64748b;font-weight:600;white-space:nowrap;vertical-align:top;border-bottom:1px solid #f1f5f9;font-family:' + MONO + '">' + esc(k) + "</td>" +
+              '<td style="padding:5px 0;color:#0f172a;border-bottom:1px solid #f1f5f9;word-break:break-word">' + esc(typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])) + "</td></tr>").join("") +
+          "</table></div></details>",
+      ));
+      // Chevron rotation follows the open state from JS (no state rules in the page <style>).
+      const det = wrap.lastElementChild;
+      const chev = det.querySelector("[data-chevron]");
+      det.addEventListener("toggle", () => { chev.style.transform = det.open ? "rotate(180deg)" : ""; });
+    }
+
+    // QA notes banner (stored notes on finalised tasks / earlier reviews)
+    if (task.qa_notes) {
+      wrap.appendChild(el(
+        '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;font-size:13px;line-height:1.55">' +
+          App.icon("AiOutlineInfoCircle", { size: 16, color: "#d97706", style: "flex-shrink:0;margin-top:1px" }) +
+          '<div style="min-width:0"><div style="font-weight:600;margin-bottom:2px">QA notes</div><div style="white-space:pre-wrap;word-break:break-word">' + esc(task.qa_notes) + "</div></div></div>",
+      ));
+    }
+
+    // Comparison table
+    const card = el('<div style="' + GLASS + 'border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0"></div>');
+    card.appendChild(el(
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' + App.sectionLabel("Annotator comparison") +
+        '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b">' +
+          '<span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff1f2;border:1px solid #fecdd3"></span> differs from majority' +
+        "</div></div>",
+    ));
+    if (!anns.length) {
+      card.appendChild(el('<div style="font-size:13px;color:#64748b">No submitted annotations yet.</div>'));
+    } else {
+      let html = '<div style="overflow-x:auto;margin:0 -4px;padding:0 4px"><table style="width:100%;border-collapse:collapse;color:#0f172a;min-width:' + (420 + anns.length * 160) + 'px">';
+      html += "<thead><tr>";
+      html += '<th style="' + TH + 'position:sticky;left:0;z-index:1">Field</th>';
+      anns.forEach((a) => {
+        html += '<th style="' + TH + '">Annotator ' + esc(a.slot == null ? "" : a.slot) +
+          '<div style="font-weight:500;text-transform:none;letter-spacing:0;color:#64748b;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">' +
+          esc(a.user_name || "—") + (a.submitted_at ? " · " + esc(fmt.date(a.submitted_at)) : "") + "</div></th>";
+      });
+      html += '<th style="' + TH + 'background:rgba(239,246,255,0.9)">Majority</th><th style="' + TH + '">Agreement</th>';
+      html += "</tr></thead><tbody>";
+      ROWS.forEach((r) => {
+        const majKey = cellKey(r.key, majority);
+        html += "<tr>";
+        html += '<td style="' + TD + 'font-size:12px;font-weight:600;color:#475569;white-space:nowrap;position:sticky;left:0;background:rgba(248,250,252,0.92);z-index:1">' + esc(r.label) + "</td>";
+        anns.forEach((a) => {
+          const differs = cellKey(r.key, a.data) !== majKey;
+          html += '<td style="' + TD + (differs ? "background:#fff1f2;color:#be123c;" : "") + '">' + esc(cellText(r.key, a.data)) + "</td>";
+        });
+        html += '<td style="' + TD + 'background:rgba(239,246,255,0.6);font-weight:600">' + esc(cellText(r.key, majority)) + "</td>";
+        html += '<td style="' + TD + '">' + (r.agr ? agreementPill(agreement[r.agr]) : '<span style="color:#94a3b8">—</span>') + "</td>";
+        html += "</tr>";
+      });
+      html += "</tbody></table></div>";
+      card.appendChild(el(html));
+
+      // Output (derived) per annotator
+      const out = el('<div style="display:flex;flex-direction:column;gap:8px;padding-top:4px;border-top:1px dashed #e2e8f0"></div>');
+      out.appendChild(el('<div style="margin-top:8px">' + App.sectionLabel("Output (derived)") + "</div>"));
+      const outRow = (name, o, strong) =>
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span style="display:inline-flex;align-items:center;gap:8px;min-width:150px;font-size:13px;' + (strong ? "font-weight:600;" : "") + 'color:#0f172a">' +
+            App.avatarInitial(name, 22) + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">' + esc(name) + "</span></span>" +
+          OUTPUT_KEYS.map((k) => outputChip(k.label, !!(o && o[k.key]))).join("") + "</div>";
+      let ohtml = "";
+      anns.forEach((a) => { ohtml += outRow(a.user_name || "Annotator " + (a.slot == null ? "" : a.slot), outputOf(a), false); });
+      ohtml += outRow("Majority", AnnotationForm.deriveOutput(majority), true);
+      out.appendChild(el('<div style="display:flex;flex-direction:column;gap:8px">' + ohtml + "</div>"));
+      const agr = OUTPUT_KEYS.map((k) => "output_" + k.key).map((k) => agreement[k]);
+      out.appendChild(el(
+        '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b;flex-wrap:wrap">Output agreement:' +
+          OUTPUT_KEYS.map((k, i) => '<span style="display:inline-flex;align-items:center;gap:4px">' + esc(k.label) + " " + agreementPill(agr[i]) + "</span>").join("") + "</div>",
+      ));
+      card.appendChild(out);
+    }
+    wrap.appendChild(card);
+
+    centreEl.innerHTML = "";
+    centreEl.appendChild(wrap);
+    centreEl.scrollTop = 0;
+  }
+
+  /* ── Right: final form + notes + JSON preview ────────────────────────── */
+  let notesEl = null;
+  let previewBox = null;
+  let previewBtn = null;
+  let previewHint = null;
+
+  function markDirty() {
+    if (!state.form || !state.detail) return;
+    const task = state.detail.task || {};
+    const notes = notesEl ? notesEl.value : "";
+    let current = "";
+    try { current = JSON.stringify(state.form.getValue()); } catch (e) { current = ""; }
+    state.dirty = isEditable() && (current !== state.baseline || notes !== String(task.qa_notes || ""));
+    if (state.previewOpen && isEditable()) {
+      state.previewStale = true;
+      if (previewHint) previewHint.style.display = "inline-flex";
+    }
+  }
+
+  function showRecord(record) {
+    if (!previewBox) return;
+    let text = "";
+    try { text = JSON.stringify(record == null ? {} : record, null, 2); } catch (e) { text = String(record); }
+    previewBox.textContent = text;
+    previewBox.style.display = "block";
+    state.previewOpen = true;
+    state.previewStale = false;
+    if (previewHint) previewHint.style.display = "none";
+    if (previewBtn) previewBtn.lastChild.textContent = " Hide JSON";
+  }
+  function hideRecord() {
+    if (!previewBox) return;
+    previewBox.style.display = "none";
+    state.previewOpen = false;
+    if (previewHint) previewHint.style.display = "none";
+    if (previewBtn) previewBtn.lastChild.textContent = " JSON preview";
+  }
+  async function refreshPreview() {
+    const d = state.detail;
+    if (!d || !state.currentId) return;
+    if (!isEditable()) { showRecord(d.record); return; }
+    const seq = taskSeq;
+    const id = state.currentId;
+    const btn = previewBtn;
+    App.setLoading(btn, true);
+    try {
+      const res = await api("/workspace/qa/tasks/" + encodeURIComponent(id) + "/preview", {
+        method: "POST",
+        body: { data: state.form ? state.form.getValue() : d.final || {} },
+      });
+      if (seq !== taskSeq || id !== state.currentId) return; // task switched while in flight
+      showRecord(res && res.record != null ? res.record : res);
+    } catch (err) {
+      if (seq !== taskSeq || id !== state.currentId) return;
+      toast.error(err.message || "Unable to build the JSON preview.");
+    } finally {
+      if (seq === taskSeq && id === state.currentId) App.setLoading(btn, false);
+    }
+  }
+
+  function renderRight() {
+    const d = state.detail || {};
+    const task = d.task || {};
+    const editable = !!d.editable;
+    const wrap = el('<div style="display:flex;flex-direction:column;gap:18px;min-width:0"></div>');
+
+    // Status banner
+    if (task.status === "approved") {
+      wrap.appendChild(el(
+        '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #a7f3d0;background:#ecfdf5;color:#065f46;font-size:13px;line-height:1.5">' +
+          App.icon("AiOutlineCheckCircle", { size: 16, color: "#059669", style: "flex-shrink:0;margin-top:1px" }) +
+          '<div><div style="font-weight:600">Finalised' + (task.finalized_by_name ? " by " + esc(task.finalized_by_name) : "") + "</div>" +
+          '<div style="color:#047857">' + esc(task.finalized_at ? fmt.dateTime(task.finalized_at) : "") + " · read-only</div></div></div>",
+      ));
+    } else if (editable) {
+      wrap.appendChild(el(
+        '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #bfdbfe;background:#eff6ff;color:#1e40af;font-size:13px;line-height:1.5">' +
+          App.icon("AiOutlineInfoCircle", { size: 16, color: "#2563eb", style: "flex-shrink:0;margin-top:1px" }) +
+          "<div>Awaiting your review. The form is pre-filled with the majority answer across annotators — adjust it, then <strong>Submit final</strong> or <strong>Return for rework</strong>.</div></div>",
+      ));
+    } else {
+      wrap.appendChild(el(
+        '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:13px;line-height:1.5">' +
+          App.icon("AiOutlineLock", { size: 16, color: "#64748b", style: "flex-shrink:0;margin-top:1px" }) +
+          "<div>This task is <strong>" + esc(task.status || "not editable") + "</strong> — the final annotation is read-only.</div></div>",
+      ));
+    }
+
+    // Final annotation form
+    const formSec = el('<div style="display:flex;flex-direction:column;gap:12px;min-width:0"></div>');
+    formSec.appendChild(el('<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' + App.sectionLabel("Final annotation") +
+      '<span style="font-size:11px;color:#94a3b8">' + (editable ? "pre-filled from majority" : "stored final") + "</span></div>"));
+    const formHost = el('<div style="min-width:0"></div>');
+    formSec.appendChild(formHost);
+    wrap.appendChild(formSec);
+
+    // QA notes
+    const notesSec = el('<div style="display:flex;flex-direction:column;gap:8px"></div>');
+    notesSec.appendChild(el(App.sectionLabel("QA notes")));
+    notesEl = el(
+      '<textarea rows="3" data-hover="fieldfocus" placeholder="Optional notes stored with the final record…" style="' +
+        T.INPUT_STYLE.replace("height:36px;", "height:auto;min-height:78px;") + 'padding:6px 11px;line-height:1.5;resize:vertical"></textarea>',
+    );
+    notesEl.value = task.qa_notes || "";
+    notesEl.setAttribute("aria-label", "QA notes");
+    if (!editable) {
+      notesEl.readOnly = true;
+      notesEl.style.background = "#f8fafc";
+      notesEl.style.color = "#334155";
+    }
+    notesEl.addEventListener("input", markDirty);
+    notesSec.appendChild(notesEl);
+    wrap.appendChild(notesSec);
+
+    // JSON preview / stored record
+    const jsonSec = el('<div style="display:flex;flex-direction:column;gap:8px;min-width:0"></div>');
+    const head = el('<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"></div>');
+    head.appendChild(el(App.sectionLabel(editable ? "JSON preview" : "Stored record")));
+    const tools = el('<div style="display:flex;align-items:center;gap:10px"></div>');
+    previewHint = el('<button type="button" data-hover="linkbtn" style="' + LINK_BTN + 'display:none;color:#b45309">' + App.icon("AiOutlineReload", { size: 12 }) + "Refresh — form changed</button>");
+    previewHint.addEventListener("click", refreshPreview);
+    previewBtn = el('<button type="button" data-hover="btn-default" style="' + BTN_SMALL + '">' + App.icon("AiOutlineFileSearch", { size: 13 }) + " JSON preview</button>");
+    previewBtn.addEventListener("click", () => { if (state.previewOpen) hideRecord(); else refreshPreview(); });
+    tools.appendChild(previewHint);
+    tools.appendChild(previewBtn);
+    head.appendChild(tools);
+    jsonSec.appendChild(head);
+    previewBox = el('<pre style="' + CODE_BOX + 'display:none"></pre>');
+    jsonSec.appendChild(previewBox);
+    jsonSec.appendChild(el('<div style="font-size:12px;color:#94a3b8">' +
+      (editable ? "Builds the customer record from the current form without saving." : "The record exactly as it was stored at finalisation.") + "</div>"));
+    wrap.appendChild(jsonSec);
+
+    // Reopen review (finalised only)
+    if (task.status === "approved") {
+      const reopen = el('<button type="button" data-hover="btn-default" style="' + BTN + 'align-self:flex-start">' + App.icon("AiOutlineUndo", { size: 14 }) + "Reopen review</button>");
+      reopen.addEventListener("click", () => reopenReview(reopen));
+      wrap.appendChild(reopen);
+    }
+
+    rightEl.innerHTML = "";
+    rightEl.appendChild(wrap);
+    rightEl.scrollTop = 0;
+
+    // Mount the shared form (exact AnnotationForm contract).
+    const initial = d.final && typeof d.final === "object" ? d.final : (d.majority && typeof d.majority === "object" ? d.majority : AnnotationForm.emptyValue(state.taxonomy));
+    state.form = AnnotationForm.mount(formHost, {
+      taxonomy: state.taxonomy,
+      value: initial,
+      readOnly: !editable,
+      onChange: markDirty,
+    });
+    try { state.baseline = JSON.stringify(state.form.getValue()); } catch (e) { state.baseline = ""; }
+    state.dirty = false;
+    state.previewOpen = false;
+    if (!editable) showRecord(d.record);
+  }
+
+  /* ── Actions ─────────────────────────────────────────────────────────── */
+  function setBusy(flag) {
+    state.busy = !!flag;
+    App.setLoading(btnFinal, false);
+    App.setLoading(btnReturn, false);
+    paintActions();
+  }
+
+  async function submitFinal() {
+    if (!isEditable() || !state.form || state.busy) return;
+    const id = state.currentId;
+    const errors = state.form.validate();
+    if (errors.length) return;
+    state.busy = true;
+    App.setLoading(btnFinal, true);
+    App.setDisabled(btnReturn, true);
+    try {
+      const res = await api("/workspace/qa/tasks/" + encodeURIComponent(id) + "/finalize", {
+        method: "POST",
+        body: { data: state.form.getValue(), qa_notes: notesEl ? notesEl.value.trim() : "" },
+      });
+      state.dirty = false;
+      state.timerRunning = false;
+      toast.success("Final annotation submitted.");
+      App.setLoading(btnFinal, false);
+      await loadList({ keepCurrent: true });
+      const next = res && res.next_task_id;
+      if (next) {
+        state.tab = "awaiting";
+        await openTask(next, { force: true });
+      } else {
+        state.tab = "finalised";
+        await openTask(id, { force: true });
+        toast.info("All tasks in this queue are reviewed.");
+      }
+    } catch (err) {
+      const list = err && err.payload && Array.isArray(err.payload.errors) ? err.payload.errors : null;
+      toast.error(list && list.length ? list.join(" ") : err.message || "Unable to finalise the task.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openReturnModal() {
+    if (!isEditable() || state.busy) return;
+    const id = state.currentId;
+    const task = (state.detail && state.detail.task) || {};
+    const ta = el(
+      '<textarea rows="4" data-hover="fieldfocus" placeholder="Tell the annotators what needs to change…" style="' +
+        T.INPUT_STYLE.replace("height:36px;", "height:auto;min-height:96px;") + 'padding:8px 11px;line-height:1.5;resize:vertical"></textarea>',
+    );
+    ta.value = notesEl ? notesEl.value : "";
+    const err = el('<div role="alert" style="display:none;font-size:12px;color:#dc2626;margin-top:6px"></div>');
+    const body = el('<div></div>');
+    body.appendChild(el(
+      '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;font-size:13px;line-height:1.5;margin-bottom:14px">' +
+        App.icon("AiOutlineExclamationCircle", { size: 16, color: "#d97706", style: "flex-shrink:0;margin-top:1px" }) +
+        "<div>The task leaves this QA queue and goes back to every annotator with your notes. Their submissions are kept and reopened for editing.</div></div>",
+    ));
+    body.appendChild(el('<div style="font-size:12px;font-weight:600;color:#475569;margin-bottom:6px">Notes for the annotators <span style="color:#dc2626">*</span></div>'));
+    body.appendChild(ta);
+    body.appendChild(err);
+    const m = App.modal({
+      title: "Return for rework",
+      subtitle: task.dataset ? "Task " + task.dataset : "QA review",
+      icon: "AiOutlineRollback",
+      iconTone: "amber",
+      width: 520,
+      body,
+    });
+    const btns = App.modalFooterButtons({
+      cancelText: "Cancel",
+      okText: "Return task",
+      okTone: "danger",
+      onCancel: () => m.close(),
+      onOk: async () => {
+        const notes = ta.value.trim();
+        if (notes.length < 3) {
+          err.textContent = "Please write at least 3 characters so the annotators know what to fix.";
+          err.style.display = "block";
+          ta.style.borderColor = "#f87171";
+          ta.focus();
+          return;
+        }
+        App.setLoading(btns.okBtn, true);
+        state.busy = true;
+        paintActions();
+        try {
+          const res = await api("/workspace/qa/tasks/" + encodeURIComponent(id) + "/return", { method: "POST", body: { qa_notes: notes } });
+          state.dirty = false;
+          state.timerRunning = false;
+          m.close();
+          toast.success("Task returned for rework.");
+          await loadList({ keepCurrent: true });
+          const next = res && res.next_task_id;
+          if (next) { state.tab = "awaiting"; await openTask(next, { force: true }); }
+          else await selectDefault();
+        } catch (e) {
+          App.setLoading(btns.okBtn, false);
+          toast.error(e.message || "Unable to return the task.");
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+    m.setFooter(btns);
+    ta.addEventListener("input", () => { err.style.display = "none"; ta.style.borderColor = "#cbd5e1"; });
+    setTimeout(() => ta.focus(), 0);
+  }
+
+  async function reopenReview(btn) {
+    const id = state.currentId;
+    if (!id || state.busy) return;
+    const ok = await App.confirm({
+      title: "Reopen review?",
+      content: "The task goes back to Awaiting review and its stored final record is cleared. The annotators' submissions are kept.",
+      okText: "Reopen",
+      danger: true,
+    });
+    if (!ok) return;
+    App.setLoading(btn, true);
+    state.busy = true;
+    paintActions();
+    try {
+      await api("/tasks/" + encodeURIComponent(id) + "/reinject", { method: "POST" });
+      toast.success("Review reopened.");
+      state.tab = "awaiting";
+      await loadList({ keepCurrent: true });
+      await openTask(id, { force: true });
+    } catch (err) {
+      App.setLoading(btn, false);
+      toast.error(err.message || "Unable to reopen the review.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  btnFinal.addEventListener("click", submitFinal);
+  btnReturn.addEventListener("click", openReturnModal);
+  window.addEventListener("beforeunload", (e) => {
+    if (state.dirty && isEditable()) { e.preventDefault(); e.returnValue = ""; }
+  });
+
+  /* ── Boot ────────────────────────────────────────────────────────────── */
+  paintTimer();
+  clearTask();
+  paintHeader();
+  paintTabs();
+  try {
+    state.taxonomy = await api("/annotation/taxonomy");
+  } catch (err) {
+    state.taxonomy = null; // AnnotationForm falls back to its built-in copy of the taxonomy.
+    toast.warning("Taxonomy unavailable — using the built-in labels.");
+  }
+  state.labels = buildLabels(state.taxonomy); // without a taxonomy, table cells degrade to the raw values
+  await loadList();
+  if (!state.listError) await selectDefault();
+})();
+</script>
+</body>
+</html>

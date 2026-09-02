@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queue Tasks · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+@media (max-width:640px){[data-stack]{flex-direction:column!important;align-items:stretch!important}}
+[data-hover=banner-blue]:hover{background:#dbeafe!important}
+[data-hover=banner-purple]:hover{background:#f3e8ff!important}
+[data-hover=sorthead]:hover{color:#1d4ed8}
+[data-hover=filter-row]:hover{background:#f8fafc}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  if (!App.requirePermission("queues")) return;
+  const root = App.renderShell({ page: "queues", title: "Queue Tasks", subtitle: "Task lifecycle and submission progress." });
+
+  const esc = App.escapeHtml;
+  const MONO = App.tokens.MONO;
+  const FONT = App.tokens.FONT;
+  const GLASS = App.tokens.GLASS;
+  const queueId = new URLSearchParams(location.search).get("id");
+  if (!queueId) {
+    App.toast.error("Missing queue id.");
+    setTimeout(() => location.replace("queues.html"), 900);
+    return;
+  }
+
+  /* ── constants ──────────────────────────────────────────────────────── */
+  const STATUS_OPTIONS = ["pending", "active", "paused", "submitted", "approved", "rejected", "declined", "returned", "skipped"];
+  const STAT_TONES = {
+    blue: { border: "#bfdbfe", bg: "#eff6ff", text: "#1d4ed8" },
+    purple: { border: "#e9d5ff", bg: "#faf5ff", text: "#7e22ce" },
+    amber: { border: "#fde68a", bg: "#fffbeb", text: "#b45309" },
+    emerald: { border: "#a7f3d0", bg: "#ecfdf5", text: "#047857" },
+    slate: { border: "#e2e8f0", bg: "#f8fafc", text: "#334155" },
+  };
+  const BTN_BACK =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 15px;border-radius:4px;border:1px solid #e2e8f0;" +
+    "background:#fff;color:#475569;font-size:12px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
+  const BTN_SM =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border-radius:6px;border:1px solid #e2e8f0;" +
+    "background:#fff;color:#334155;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
+  const BTN_BANNER =
+    "display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;border-radius:4px;background:#fff;" +
+    "font-size:11px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;flex-shrink:0;";
+  const LABEL = "font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155;";
+  const MONO_BADGE =
+    "display:inline-flex;align-items:center;justify-content:center;font-family:" + MONO +
+    ";font-weight:700;font-size:12px;background:#f1f5f9;color:#334155;padding:2px 8px;border-radius:4px;white-space:nowrap;";
+
+  // Comparison rows for the View modal (SPEC2 FIELD_ORDER, source_description last).
+  const FIELDS = [
+    { key: "data_type", label: "Data type", tax: "data_type", agreement: "data_type" },
+    { key: "data_structure", label: "Data structure", tax: "data_structure", agreement: "data_structure" },
+    { key: "attack_type", label: "Attack type", tax: "attack_type", agreement: "attack_type", list: true },
+    { key: "attack_subcategory", label: "Subcategory", tax: "attack_subcategory", agreement: "attack_subcategory", list: true },
+    { key: "domain", label: "Domain", tax: "domain", agreement: "domain" },
+    { key: "role", label: "Role", tax: "role", agreement: "role" },
+    { key: "verified", label: "Verified", bool: ["Verified", "Unverified"], agreement: "verified" },
+    { key: "language", label: "Language", tax: "language", agreement: "language" },
+    { key: "document_edited", label: "Document edited", bool: ["Yes", "No"], agreement: "document_edited" },
+    { key: "severity.J", label: "Severity J", agreement: "severity_J" },
+    { key: "severity.I", label: "Severity I", agreement: "severity_I" },
+    { key: "severity.L", label: "Severity L", agreement: "severity_L" },
+    { key: "intention", label: "Intention", tax: "intention", agreement: "intention" },
+    { key: "source", label: "Source", tax: "source", agreement: "source" },
+    { key: "source_description", label: "Source description", text: true },
+  ];
+
+  /* ── state ──────────────────────────────────────────────────────────── */
+  const state = {
+    data: null, tasks: [], total: 0, page: 1, pageSize: 10, loading: true, loadError: null,
+    statusFilter: [], sortKey: null, sortDir: null,
+  };
+  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+  const ts = (v) => { const t = v ? new Date(v).getTime() : NaN; return isNaN(t) ? 0 : t; };
+  const num = (v, d) => (v == null || v === "" ? d : Number(v));
+  const isQA = () => !!(state.data && ((state.data.queue || {}).annotation_type === "qa" || (state.data.summary || {}).queue_type === "qa"));
+
+  /* ── persistent layout containers (reference: p-2 max-w-7xl space-y-4) ─ */
+  const headerBox = App.el('<div data-stack style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px"></div>');
+  const statsBox = App.el('<div style="display:flex;flex-wrap:wrap;gap:8px"></div>');
+  const teamBox = App.el('<div style="display:none;flex-wrap:wrap;align-items:center;gap:8px"></div>');
+  const bannersBox = App.el('<div style="display:none;flex-direction:column;gap:16px"></div>');
+  const tablePanel = App.el('<div style="' + GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
+  const tableBox = App.el("<div></div>");
+  tablePanel.appendChild(tableBox);
+  const firstLoad = App.el('<div style="display:flex;height:256px;align-items:center;justify-content:center">' + App.spinner(36) + "</div>");
+  root.appendChild(firstLoad);
+
+  /* ── data ───────────────────────────────────────────────────────────── */
+  async function load(page, size) {
+    const p = page || state.page;
+    const s = size || state.pageSize;
+    state.loading = true;
+    if (state.data) renderTable();
+    try {
+      const res = await App.api("/queues/" + encodeURIComponent(queueId) + "/tasks?page=" + p + "&page_size=" + s);
+      state.data = res || {};
+      state.tasks = Array.isArray(res && res.tasks) ? res.tasks : [];
+      state.total = res && res.pagination && res.pagination.total != null ? Number(res.pagination.total) : state.tasks.length;
+      state.page = p;
+      state.pageSize = s;
+      state.loadError = null;
+    } catch (err) {
+      state.loadError = err;
+      App.toast.error(err.message || "Failed to load queue tasks.");
+    } finally {
+      state.loading = false;
+      renderAll();
+    }
+  }
+
+  /* ── render ─────────────────────────────────────────────────────────── */
+  function renderAll() {
+    if (!state.data) {
+      if (state.loadError) {
+        App.fill(
+          firstLoad,
+          '<div style="' + GLASS + 'padding:16px;width:100%;box-sizing:border-box">' +
+            App.emptyState(esc(state.loadError.status === 404 ? "Queue not found." : state.loadError.message || "Failed to load queue tasks.")) +
+            '<div style="display:flex;justify-content:center;padding-bottom:16px"><a href="queues.html" data-hover="btn-default" style="' + BTN_BACK + 'text-decoration:none">' +
+            App.icon("AiOutlineArrowLeft", { size: 12 }) + "<span>Back to Queues</span></a></div></div>",
+        );
+      }
+      return;
+    }
+    if (firstLoad.isConnected) {
+      firstLoad.remove();
+      root.appendChild(headerBox);
+      root.appendChild(statsBox);
+      root.appendChild(teamBox);
+      root.appendChild(bannersBox);
+      root.appendChild(tablePanel);
+    }
+    renderHeader();
+    renderStats();
+    renderTeam();
+    renderBanners();
+    renderTable();
+  }
+
+  function renderHeader() {
+    const queue = state.data.queue || {};
+    const summary = state.data.summary || {};
+    const qa = isQA();
+    const type = queue.annotation_type || summary.queue_type || "";
+    const pct = Math.max(0, Math.min(100, num(summary.progress_percent, 0)));
+    const req = num(queue.required_annotators, null);
+
+    const left = App.el(
+      '<div style="display:flex;align-items:center;gap:12px;min-width:0">' +
+        '<button type="button" data-role="back" data-hover="btn-default" style="' + BTN_BACK + '">' + App.icon("AiOutlineArrowLeft", { size: 12 }) + "<span>Queues</span></button>" +
+        '<div style="min-width:0">' +
+        '<span style="display:block;font-size:10px;text-transform:uppercase;letter-spacing:.28em;color:#64748b">Queue Tasks</span>' +
+        '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+        '<span style="font-size:16px;font-weight:600;color:#0f172a;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(summary.queue_name || queue.name || "Queue") + "</span>" +
+        (type ? App.pill(type, qa ? "purple" : "blue") : "") +
+        (!qa && req ? '<span data-tip="Every assigned annotator annotates every task" style="' + MONO_BADGE + 'font-size:11px">' + esc(req + " annotator" + (req === 1 ? "" : "s")) + "</span>" : "") +
+        "</div></div></div>",
+    );
+    left.querySelector('[data-role="back"]').addEventListener("click", () => { location.href = "queues.html"; });
+
+    const progressCard =
+      '<div style="border-radius:8px;border:1px solid #e2e8f0;background:#fff;padding:6px 12px;display:flex;align-items:center;gap:12px;min-width:260px;box-sizing:border-box">' +
+      '<div style="flex:1;min-width:0">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">' +
+      '<span style="' + LABEL + '">Progress</span>' +
+      '<span style="font-size:12px;font-family:' + MONO + ';font-weight:700;color:#1e293b">' + pct + "%</span></div>" +
+      App.progress(pct, qa ? "#7c3aed" : "#1d4ed8", false) +
+      '<span style="display:block;font-size:10px;color:#64748b;margin-top:2px">' + num(summary.completed_tasks, 0) + " / " + num(summary.total_tasks, 0) + " finalised</span>" +
+      "</div></div>";
+
+    headerBox.innerHTML = "";
+    headerBox.appendChild(left);
+    headerBox.appendChild(App.el(progressCard));
+  }
+
+  function renderStats() {
+    const queue = state.data.queue || {};
+    const summary = state.data.summary || {};
+    const qa = isQA();
+    const total = num(summary.total_tasks, 0);
+    const finalised = num(summary.completed_tasks, 0);
+    const remaining = num(summary.pending_tasks, 0);
+    // SPEC2 5.1: production submitted_to_qa = submitted + approved → awaiting = submitted_to_qa − approved.
+    // QA queue: remaining (= submitted) is exactly what is awaiting review.
+    let awaiting = qa ? remaining : Math.max(0, num(summary.submitted_to_qa, 0) - finalised);
+    if (!qa && queue.submitted_tasks != null && num(summary.submitted_to_qa, 0) === 0) awaiting = num(queue.submitted_tasks, 0);
+    const stats = [
+      { label: "Type", value: (summary.queue_type || queue.annotation_type || "—").toUpperCase(), tone: qa ? "purple" : "blue" },
+      { label: "Total", value: total, tone: "slate" },
+      { label: "Awaiting QA", value: awaiting, tone: "purple" },
+      { label: "Finalised", value: finalised, tone: "emerald" },
+      { label: "Remaining", value: remaining, tone: "amber" },
+      { label: "Status", value: String(summary.status || queue.status || "—").replace(/_/g, " "), tone: "slate" },
+    ];
+    statsBox.innerHTML = stats
+      .map((s) => {
+        const t = STAT_TONES[s.tone] || STAT_TONES.slate;
+        return (
+          '<div style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid ' + t.border + ";background:" + t.bg + ";color:" + t.text + ';padding:6px 12px">' +
+          '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;opacity:.7">' + esc(s.label) + "</span>" +
+          '<span style="font-size:14px;font-weight:700;font-family:' + MONO + ';text-transform:capitalize">' + esc(String(s.value)) + "</span></div>"
+        );
+      })
+      .join("");
+  }
+
+  function renderTeam() {
+    const queue = state.data.queue || {};
+    const names = Array.isArray(queue.assigned_user_names) ? queue.assigned_user_names : [];
+    if (!names.length) { teamBox.style.display = "none"; teamBox.innerHTML = ""; return; }
+    teamBox.style.display = "flex";
+    teamBox.innerHTML =
+      '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Assigned team</span>' +
+      '<span style="font-size:10px;font-family:' + MONO + ';font-weight:700;color:#334155">' + names.length + "</span>" +
+      '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+      names.map((n) => '<span title="' + esc(n) + '" style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid #e2e8f0;background:#fff;color:#334155">' + esc(n) + "</span>").join("") +
+      "</div>";
+  }
+
+  function renderBanners() {
+    const queue = state.data.queue || {};
+    bannersBox.innerHTML = "";
+    const banner = (tone, iconName, title, desc, btnText, target) => {
+      const blue = tone === "blue";
+      const node = App.el(
+        '<div style="display:flex;align-items:center;gap:12px;border-radius:8px;border:1px solid ' + (blue ? "#bfdbfe" : "#e9d5ff") + ";background:" + (blue ? "#eff6ff" : "#faf5ff") + ';padding:8px 12px">' +
+          App.icon(iconName, { size: 16, color: blue ? "#2563eb" : "#9333ea", style: "flex-shrink:0" }) +
+          '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:' + (blue ? "#1e40af" : "#6b21a8") + '">' + esc(title) + "</div>" +
+          '<div style="font-size:12px;color:' + (blue ? "#1d4ed8" : "#7e22ce") + '">' + esc(desc) + "</div></div>" +
+          '<button type="button" data-hover="' + (blue ? "banner-blue" : "banner-purple") + '" style="' + BTN_BANNER + "border:1px solid " + (blue ? "#93c5fd" : "#d8b4fe") + ";color:" + (blue ? "#1d4ed8" : "#7e22ce") + '">' + esc(btnText) + "</button></div>",
+      );
+      node.querySelector("button").addEventListener("click", () => { location.href = "queue-tasks.html?id=" + encodeURIComponent(target); });
+      return node;
+    };
+    if (queue.linked_qa_queue_id) {
+      bannersBox.appendChild(banner("blue", "AiOutlineCheckCircle", "QA queue active", "Tasks migrate to the QA queue incrementally as production annotators submit.", "Open QA", queue.linked_qa_queue_id));
+    }
+    if (queue.source_production_queue_id) {
+      bannersBox.appendChild(banner("purple", "AiOutlineClockCircle", "QA · source production queue", "Tasks in this QA queue originate from the linked production queue.", "Open Production", queue.source_production_queue_id));
+    }
+    bannersBox.style.display = bannersBox.childNodes.length ? "flex" : "none";
+  }
+
+  /* ── table ──────────────────────────────────────────────────────────── */
+  function visibleRows() {
+    let rows = state.tasks.slice();
+    if (state.statusFilter.length) rows = rows.filter((r) => state.statusFilter.includes(String(r.status || "").toLowerCase()));
+    if (state.sortKey && state.sortDir) {
+      const k = state.sortKey;
+      const dir = state.sortDir === "asc" ? 1 : -1;
+      rows.sort((a, b) => (ts(a[k]) - ts(b[k])) * dir);
+    }
+    return rows;
+  }
+
+  function sortableHeader(title, key) {
+    const active = state.sortKey === key ? state.sortDir : null;
+    const next = active === null ? "asc" : active === "asc" ? "desc" : null;
+    const tip = next === "asc" ? "Click to sort ascending" : next === "desc" ? "Click to sort descending" : "Click to cancel sorting";
+    const node = App.el(
+      '<div role="button" tabindex="0" data-hover="sorthead" data-tip="' + esc(tip) + '" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;transition:color .15s">' +
+        "<span>" + esc(title) + "</span>" +
+        '<span style="display:inline-flex;flex-direction:column;line-height:0">' +
+        App.icon("AiFillCaretUp", { size: 9, color: active === "asc" ? "#1d4ed8" : "#cbd5e1", style: "margin-bottom:-2px" }) +
+        App.icon("AiFillCaretDown", { size: 9, color: active === "desc" ? "#1d4ed8" : "#cbd5e1" }) +
+        "</span></div>",
+    );
+    const cycle = () => {
+      if (state.sortKey !== key) { state.sortKey = key; state.sortDir = "asc"; }
+      else if (state.sortDir === "asc") state.sortDir = "desc";
+      else { state.sortKey = null; state.sortDir = null; }
+      renderTable();
+    };
+    node.addEventListener("click", cycle);
+    node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycle(); } });
+    return node;
+  }
+
+  function statusHeader() {
+    const active = state.statusFilter.length > 0;
+    const node = App.el(
+      '<div style="display:inline-flex;align-items:center;gap:6px"><span>Status</span>' +
+        '<button type="button" aria-label="Filter by status" data-tip="Filter" data-hover="btn-text" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;border:0;padding:0;cursor:pointer;transition:.15s;' +
+        "background:" + (active ? "#eff6ff" : "transparent") + ";color:" + (active ? "#1d4ed8" : "#94a3b8") + '">' +
+        App.icon("AiOutlineFilter", { size: 12 }) + "</button></div>",
+    );
+    node.querySelector("button").addEventListener("click", (e) => { e.stopPropagation(); openStatusFilter(e.currentTarget); });
+    return node;
+  }
+
+  function openStatusFilter(anchor) {
+    const pending = new Set(state.statusFilter);
+    const pop = App.el(
+      '<div role="dialog" aria-label="Status filter" style="position:fixed;z-index:1050;visibility:hidden;min-width:170px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;' +
+        "box-shadow:0 12px 32px rgba(15,23,42,.16);padding:4px 0;font-family:" + FONT + ';text-transform:none;letter-spacing:normal;font-weight:400;font-size:13.5px;color:#0f172a;box-sizing:border-box">' +
+        '<div data-role="list" style="max-height:260px;overflow-y:auto;padding:4px 4px"></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid #f1f5f9;padding:7px 8px">' +
+        '<button type="button" data-role="reset" style="border:0;background:none;padding:0 4px;font-size:12.5px;font-family:inherit;color:#1d4ed8;cursor:pointer">Reset</button>' +
+        '<button type="button" data-role="ok" data-hover="btn-modal-primary" style="display:inline-flex;align-items:center;justify-content:center;height:24px;padding:0 10px;border-radius:6px;border:0;background:#2563eb;color:#fff;font-size:12.5px;font-family:inherit;cursor:pointer;transition:.15s">OK</button>' +
+        "</div></div>",
+    );
+    const list = pop.querySelector('[data-role="list"]');
+    const resetBtn = pop.querySelector('[data-role="reset"]');
+    const syncReset = () => App.setDisabled(resetBtn, pending.size === 0);
+    STATUS_OPTIONS.forEach((s) => {
+      const row = App.el('<div data-hover="filter-row" style="padding:5px 8px;border-radius:4px"></div>');
+      const cb = App.checkbox({ checked: pending.has(s), label: cap(s), onChange: (v) => { if (v) pending.add(s); else pending.delete(s); syncReset(); } });
+      cb.style.fontSize = "13.5px";
+      cb.style.width = "100%";
+      row.appendChild(cb);
+      list.appendChild(row);
+    });
+    syncReset();
+    document.body.appendChild(pop);
+
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      const h = pop.offsetHeight;
+      let left = r.left;
+      let top = r.bottom + 6;
+      if (left + w > window.innerWidth - 8) left = Math.max(8, window.innerWidth - w - 8);
+      if (top + h > window.innerHeight - 8 && r.top - h - 6 >= 0) top = r.top - h - 6;
+      pop.style.left = left + "px";
+      pop.style.top = top + "px";
+    };
+    place();
+    pop.style.visibility = "visible";
+
+    let done = false;
+    const close = () => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      pop.remove();
+    };
+    const apply = (values) => { state.statusFilter = values; close(); renderTable(); };
+    const onOutside = (e) => { if (pop.contains(e.target) || anchor.contains(e.target)) return; close(); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    resetBtn.addEventListener("click", () => apply([]));
+    pop.querySelector('[data-role="ok"]').addEventListener("click", () => apply(STATUS_OPTIONS.filter((s) => pending.has(s))));
+    setTimeout(() => {
+      document.addEventListener("mousedown", onOutside, true);
+      document.addEventListener("keydown", onKey, true);
+      window.addEventListener("scroll", place, true);
+      window.addEventListener("resize", place);
+    }, 0);
+  }
+
+  function taskName(r) {
+    return r.dataset || r.file_name || "Task " + String(r.id || "").slice(0, 8);
+  }
+
+  function renderTable() {
+    if (!state.data) return;
+    const queue = state.data.queue || {};
+    const qa = isQA();
+    const rows = visibleRows();
+    const requiredDefault = num(queue.required_annotators, null);
+
+    const columns = [
+      {
+        title: "#", key: "index", width: 60, align: "center",
+        render: (_, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>",
+      },
+      {
+        title: "Task", key: "task", width: 260, cellStyle: "max-width:0;",
+        render: (r) => {
+          const preview = r.input_preview || "";
+          return (
+            '<div style="padding:2px 0;min-width:0">' +
+            '<span data-tip="' + esc(r.id) + '" style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(taskName(r)) + "</span>" +
+            (preview
+              ? '<span title="' + esc(preview) + '" style="display:block;font-size:12px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(preview) + "</span>"
+              : '<span style="display:block;font-size:10px;font-family:' + MONO + ';color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(String(r.id || "").slice(0, 18)) + "…</span>") +
+            "</div>"
+          );
+        },
+      },
+      {
+        title: "Annotations", key: "annotations", width: 110,
+        render: (r) => {
+          const sc = num(r.submitted_count, 0);
+          const req = r.required_annotators != null ? num(r.required_annotators, null) : requiredDefault;
+          return '<span data-tip="Submitted annotations / required annotators" style="' + MONO_BADGE + '">' + sc + "/" + (req == null ? "—" : req) + "</span>";
+        },
+      },
+      {
+        title: "Status", key: "status", width: 150, headerRender: statusHeader,
+        render: (r) => {
+          const s = String(r.status || "pending").toLowerCase();
+          const sentToQA = !qa && s === "submitted";
+          return (
+            '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">' + App.statusPill(s) +
+            (sentToQA
+              ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#7e22ce;font-weight:600;text-transform:uppercase;letter-spacing:.05em">' + App.icon("AiOutlineSend", { size: 9 }) + " Sent to QA</span>"
+              : "") +
+            "</div>"
+          );
+        },
+      },
+      {
+        title: "Finalised by", key: "finalized", width: 170,
+        render: (r) => {
+          if (!r.finalized_by_name && !r.finalized_at) return '<span style="font-size:12px;color:#94a3b8">—</span>';
+          return (
+            '<div style="min-width:0"><span style="display:block;font-size:12px;color:#334155;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.finalized_by_name || "") + '">' + esc(r.finalized_by_name || "—") + "</span>" +
+            '<span style="display:block;font-size:11px;color:#64748b;white-space:nowrap;margin-top:2px">' + esc(App.fmt.dateTime(r.finalized_at)) + "</span></div>"
+          );
+        },
+      },
+      {
+        title: "Consensus", key: "consensus", width: 120,
+        render: (r) => {
+          if (r.consensus_reached === true) return App.pill("consensus", "emerald");
+          if (r.consensus_reached === false) return App.pill("majority/conflict", "amber");
+          return App.pill("—", "slate");
+        },
+      },
+      {
+        title: "Created", key: "created_at", width: 150, headerRender: () => sortableHeader("Created", "created_at"),
+        render: (r) => '<span style="font-size:12px;color:#475569;white-space:nowrap">' + esc(App.fmt.dateTime(r.created_at)) + "</span>",
+      },
+      {
+        title: "Updated", key: "updated_at", width: 150, headerRender: () => sortableHeader("Updated", "updated_at"),
+        render: (r) => '<span style="font-size:12px;color:#475569;white-space:nowrap">' + esc(App.fmt.dateTime(r.updated_at)) + "</span>",
+      },
+      {
+        title: "Actions", key: "actions", width: 150, align: "right",
+        render: (r) => {
+          const wrap = App.el('<div style="display:flex;justify-content:flex-end;gap:6px"></div>');
+          if (String(r.status || "").toLowerCase() === "approved") {
+            const reopen = App.el('<button type="button" data-tip="Reopen this finalised task for QA re-evaluation" data-hover="btn-default" style="' + BTN_SM + '">' + App.icon("AiOutlineUndo", { size: 12 }) + "<span>Reopen</span></button>");
+            reopen.addEventListener("click", (e) => { e.stopPropagation(); reopenTask(r, reopen); });
+            wrap.appendChild(reopen);
+          }
+          const view = App.el('<button type="button" data-tip="View prompt, annotations and final record" data-hover="btn-default" style="' + BTN_SM + '">' + App.icon("AiOutlineEye", { size: 12 }) + "<span>View</span></button>");
+          view.addEventListener("click", (e) => { e.stopPropagation(); openView(r); });
+          wrap.appendChild(view);
+          return wrap;
+        },
+      },
+    ];
+
+    App.table(tableBox, {
+      columns,
+      rows,
+      rowKey: "id",
+      loading: state.loading,
+      minWidth: 1320,
+      emptyText: state.tasks.length && state.statusFilter.length ? "No tasks match the selected status filter." : "No tasks in this queue yet.",
+      rowStyle: (r) => {
+        const s = String(r.status || "").toLowerCase();
+        if (s === "approved") return "background:rgba(236,253,245,.3);";
+        if (s === "submitted" && !qa) return "background:rgba(250,245,255,.3);";
+        if (s === "declined" || s === "rejected") return "background:rgba(255,241,242,.3);";
+        return "";
+      },
+      pagination: {
+        page: state.page, pageSize: state.pageSize, total: state.total,
+        showSizeChanger: true, pageSizeOptions: [10, 25, 50, 100],
+        onChange: (p, s) => load(p, s),
+      },
+    });
+  }
+
+  /* ── reopen (POST /tasks/{id}/reinject) ─────────────────────────────── */
+  async function reopenTask(row, btn) {
+    const ok = await App.confirm({
+      title: "Reopen task?",
+      content: "This finalised task will be sent back to the QA queue for re-evaluation. Its final record is cleared until QA submits again.",
+      okText: "Reopen",
+    });
+    if (!ok) return;
+    if (btn) App.setLoading(btn, true);
+    try {
+      await App.api("/tasks/" + encodeURIComponent(row.id) + "/reinject", { method: "POST" });
+      App.toast.success("Task reopened for QA review.");
+      await load();
+    } catch (err) {
+      App.toast.error(err.message || "Failed to reopen task.");
+    } finally {
+      if (btn && btn.isConnected) App.setLoading(btn, false);
+    }
+  }
+
+  /* ── taxonomy labels (GET /annotation/taxonomy, cached; raw values on failure) ── */
+  let taxonomyPromise = null;
+  function loadTaxonomy() {
+    if (!taxonomyPromise) {
+      taxonomyPromise = App.api("/annotation/taxonomy").then(buildLabelMap).catch(() => ({}));
+    }
+    return taxonomyPromise;
+  }
+  function buildLabelMap(t) {
+    const map = {};
+    const add = (key, list) => {
+      map[key] = map[key] || {};
+      (list || []).forEach((o) => { if (o && o.value != null) map[key][String(o.value)] = o.label == null ? String(o.value) : String(o.label); });
+    };
+    Object.keys(t || {}).forEach((k) => {
+      const v = t[k];
+      if (Array.isArray(v)) add(k, v);
+      else if (v && typeof v === "object" && k === "attack_subcategory") Object.keys(v).forEach((g) => add(k, v[g]));
+    });
+    return map;
+  }
+  function getPath(obj, path) {
+    return String(path).split(".").reduce((acc, k) => (acc && typeof acc === "object" ? acc[k] : undefined), obj);
+  }
+  function display(field, value, tax) {
+    if (value == null || value === "" || (Array.isArray(value) && !value.length)) return "—";
+    if (field.bool) return value === true || value === "true" ? field.bool[0] : field.bool[1];
+    if (Array.isArray(value)) return value.map((x) => display(Object.assign({}, field, { list: false }), x, tax)).join(", ");
+    if (field.tax && tax[field.tax] && tax[field.tax][String(value)]) return tax[field.tax][String(value)];
+    return String(value);
+  }
+  const norm = (v) => (Array.isArray(v) ? v.map(String).sort().join("|") : v == null ? "" : String(v));
+
+  /* ── view modal (GET /workspace/qa/tasks/{id}) ──────────────────────── */
+  function agreementPill(level) {
+    if (level === "full") return App.pill("full", "emerald");
+    if (level === "majority") return App.pill("majority", "amber");
+    if (level === "none") return App.pill("none", "rose");
+    return App.pill("—", "slate");
+  }
+  function outputChips(out) {
+    const o = out || {};
+    const chip = (label, v) => App.pill(label + ": " + (v ? "true" : "false"), v ? "emerald" : "slate");
+    return chip("Jailbreak", !!o.jailbreak) + " " + chip("Prompt injection", !!o.prompt_injection) + " " + chip("Prompt leakage", !!o.prompt_leakage);
+  }
+  function deriveOutput(data) {
+    const at = Array.isArray(data && data.attack_type) ? data.attack_type : [];
+    return { jailbreak: at.includes("jailbreak"), prompt_injection: at.includes("prompt_injection"), prompt_leakage: at.includes("prompt_leakage") };
+  }
+  function promptBox(text) {
+    return (
+      '<div style="white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.65;color:#0f172a;background:rgba(255,255,255,0.6);border:1px solid #e2e8f0;border-radius:12px;padding:16px;max-height:260px;overflow-y:auto">' +
+      (text ? esc(text) : '<span style="color:#94a3b8">No prompt text.</span>') + "</div>"
+    );
+  }
+  function jsonBox(obj) {
+    let txt = "";
+    try { txt = JSON.stringify(obj, null, 2); } catch (e) { txt = String(obj); }
+    return '<pre style="margin:0;font-family:' + MONO + ';font-size:12px;line-height:1.55;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;overflow:auto;max-height:320px;white-space:pre;color:#0f172a">' + esc(txt) + "</pre>";
+  }
+  const chip = (html) => '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid #e2e8f0;background:#fff;color:#334155;white-space:nowrap">' + html + "</span>";
+
+  function renderComparison(annotations, majority, agreement, tax) {
+    const TH = "background:#f8fafc;color:#334155;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;text-align:left;border-bottom:1px solid #e2e8f0;white-space:nowrap;";
+    const TD = "padding:7px 10px;border-bottom:1px solid #f1f5f9;vertical-align:top;font-size:12.5px;color:#0f172a;";
+    let html =
+      '<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff"><table style="width:100%;border-collapse:collapse;min-width:' + (420 + annotations.length * 170) + 'px">' +
+      "<thead><tr>" +
+      '<th style="' + TH + '">Field</th>' +
+      annotations
+        .map((a, i) => '<th style="' + TH + '">Annotator ' + (a.slot != null ? a.slot : i + 1) + '<span style="display:block;font-weight:500;text-transform:none;letter-spacing:normal;color:#64748b;font-size:11px">' + esc(a.user_name || "—") + "</span></th>")
+        .join("") +
+      '<th style="' + TH + '">Majority</th><th style="' + TH + '">Agreement</th></tr></thead><tbody>';
+    FIELDS.forEach((f) => {
+      const majVal = getPath(majority, f.key);
+      html += "<tr>";
+      html += '<td style="' + TD + 'font-weight:600;white-space:nowrap">' + esc(f.label) + "</td>";
+      annotations.forEach((a) => {
+        const v = getPath(a.data || {}, f.key);
+        const differs = !f.text && majVal !== undefined && norm(v) !== norm(majVal);
+        html += '<td style="' + TD + (differs ? "background:#fff1f2;color:#be123c;" : "") + '">' + esc(display(f, v, tax)) + "</td>";
+      });
+      html += '<td style="' + TD + 'font-weight:500">' + esc(majVal === undefined ? "—" : display(f, majVal, tax)) + "</td>";
+      html += '<td style="' + TD + '">' + (f.agreement ? agreementPill(agreement[f.agreement]) : App.pill("—", "slate")) + "</td>";
+      html += "</tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+  }
+
+  function renderTaskDetail(row, d, tax) {
+    const task = d.task || {};
+    const annotations = Array.isArray(d.annotations) ? d.annotations : [];
+    const majority = d.majority || {};
+    const agreement = d.agreement || {};
+    const status = String(task.status || row.status || "pending").toLowerCase();
+    const text = task.input_text != null ? task.input_text : "";
+    const chars = task.data_length_chars != null ? task.data_length_chars : text.length;
+    const submitted = task.submitted_count != null ? task.submitted_count : num(row.submitted_count, annotations.length);
+    const required = task.required_annotators != null ? task.required_annotators : row.required_annotators;
+    const sourceField = FIELDS.find((f) => f.key === "source");
+    const meta = task.meta_data && typeof task.meta_data === "object" ? task.meta_data : {};
+    const metaKeys = Object.keys(meta);
+
+    let html = '<div style="display:flex;flex-direction:column;gap:16px">';
+    html +=
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">' +
+      chip(esc(chars) + " chars") +
+      (task.data_length_bucket ? chip(esc(task.data_length_bucket)) : "") +
+      (task.source ? chip(esc(display(sourceField, task.source, tax))) : "") +
+      App.statusPill(status) +
+      chip(esc(submitted) + "/" + esc(required == null ? "—" : required) + " annotators submitted") +
+      (d.consensus_reached === true ? App.pill("consensus", "emerald") : d.consensus_reached === false ? App.pill("majority/conflict", "amber") : "") +
+      "</div>";
+    html += App.sectionLabel("Prompt") + promptBox(text || row.input_preview || "");
+    if (task.qa_notes) {
+      html += '<div style="border:1px solid #fde68a;background:#fffbeb;color:#92400e;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5"><div style="' + LABEL + 'color:#b45309;margin-bottom:4px">QA notes</div>' + esc(task.qa_notes) + "</div>";
+    }
+    if (metaKeys.length) {
+      html +=
+        '<details style="border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:0"><summary style="cursor:pointer;padding:8px 12px;' + LABEL + '">Seed metadata from sheet (' + metaKeys.length + ")</summary>" +
+        '<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tbody>' +
+        metaKeys.map((k) => '<tr><td style="padding:6px 12px;border-top:1px solid #f1f5f9;font-family:' + MONO + ';font-size:12px;color:#475569;white-space:nowrap;width:40%">' + esc(k) + '</td><td style="padding:6px 12px;border-top:1px solid #f1f5f9;color:#0f172a;word-break:break-word">' + esc(typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])) + "</td></tr>").join("") +
+        "</tbody></table></details>";
+    }
+    if (annotations.length) {
+      html += App.sectionLabel("Annotator comparison") + renderComparison(annotations, majority, agreement, tax);
+      html +=
+        App.sectionLabel("Output (derived)") +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+        annotations.map((a, i) =>
+          '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px;color:#334155"><span style="min-width:120px;font-weight:600">Annotator ' + (a.slot != null ? a.slot : i + 1) + "</span>" + outputChips(a.output || deriveOutput(a.data)) +
+          (a.submitted_at ? '<span style="font-size:11px;color:#64748b;margin-left:auto;white-space:nowrap">' + esc(App.fmt.dateTime(a.submitted_at)) + (a.elapsed_seconds ? " · " + esc(App.fmt.timer(a.elapsed_seconds)) : "") + "</span>" : "") +
+          "</div>").join("") +
+        "</div>";
+    } else {
+      html += '<div style="font-size:13px;color:#64748b;border:1px dashed #cbd5e1;border-radius:10px;padding:14px;text-align:center">No submitted annotations yet.</div>';
+    }
+    if (status === "approved") {
+      const by = task.finalized_by_name || row.finalized_by_name;
+      const at = task.finalized_at || row.finalized_at;
+      html +=
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">' + App.sectionLabel("Final record") +
+        (by || at ? '<span style="font-size:12px;color:#64748b">Finalised by <strong style="color:#334155">' + esc(by || "—") + "</strong> · " + esc(App.fmt.dateTime(at)) + "</span>" : "") +
+        "</div>" +
+        (d.record ? jsonBox(d.record) : '<div style="font-size:13px;color:#64748b">The final record is not available.</div>');
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function renderTaskFallback(row, err) {
+    return (
+      '<div style="display:flex;flex-direction:column;gap:16px">' +
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">' + App.statusPill(row.status) +
+      chip(esc(num(row.submitted_count, 0)) + "/" + esc(row.required_annotators == null ? "—" : row.required_annotators) + " annotators submitted") + "</div>" +
+      App.sectionLabel("Prompt preview") + promptBox(row.input_preview || "") +
+      '<div style="display:flex;gap:10px;align-items:flex-start;border:1px solid #fde68a;background:#fffbeb;color:#92400e;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5">' +
+      App.icon("AiOutlineExclamationCircle", { size: 16, color: "#d97706", style: "flex-shrink:0;margin-top:1px" }) +
+      "<div>Detailed annotations could not be loaded: " + esc((err && err.message) || "Request failed") + "</div></div></div>"
+    );
+  }
+
+  async function openView(row) {
+    const m = App.modal({
+      title: taskName(row),
+      subtitle: "Task · " + String(row.status || "pending").replace(/_/g, " "),
+      icon: "AiOutlineFileSearch",
+      iconTone: "blue",
+      width: 940,
+      body: '<div style="display:flex;justify-content:center;padding:32px 0">' + App.spinner(28) + "</div>",
+    });
+    const footer = App.el('<div style="display:flex;justify-content:flex-end;gap:8px"></div>');
+    const closeBtn = App.el('<button type="button" data-hover="btn-cancel" style="display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 16px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;color:#475569;border:1px solid #e2e8f0;background:#fff;transition:.15s">Close</button>');
+    closeBtn.addEventListener("click", () => m.close());
+    footer.appendChild(closeBtn);
+    m.setFooter(footer);
+
+    let detail = null;
+    let tax = {};
+    try {
+      const results = await Promise.all([App.api("/workspace/qa/tasks/" + encodeURIComponent(row.id)), loadTaxonomy()]);
+      detail = results[0] || {};
+      tax = results[1] || {};
+      if (!m.root.isConnected) return;
+      m.setBody(renderTaskDetail(row, detail, tax));
+    } catch (err) {
+      if (!m.root.isConnected) return;
+      m.setBody(renderTaskFallback(row, err));
+    }
+    const status = String((detail && detail.task && detail.task.status) || row.status || "").toLowerCase();
+    if (status === "approved") {
+      const reopen = App.el('<button type="button" data-hover="btn-modal-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:8px;font-size:14px;font-weight:500;font-family:inherit;cursor:pointer;color:#fff;border:0;background:#2563eb;transition:.15s">' + App.icon("AiOutlineUndo", { size: 14 }) + "<span>Reopen</span></button>");
+      reopen.addEventListener("click", () => { m.close(); reopenTask(row, null); });
+      footer.insertBefore(reopen, closeBtn);
+    }
+  }
+
+  await load(1, 10);
+})();
+</script>
+</body>
+</html>

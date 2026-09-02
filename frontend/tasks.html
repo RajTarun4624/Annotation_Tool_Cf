@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasks · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Only :hover states that inline styles cannot express. */
+  [data-hover=linkbtn]:hover{color:#1d4ed8!important}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  await App.ensureSession();
+  if (!App.requirePermission("tasks")) return;
+  const root = App.renderShell({
+    page: "tasks",
+    title: "Tasks",
+    subtitle: "Monitor task progress and review submissions.",
+  });
+
+  const { escapeHtml, fmt } = App;
+  const MONO = App.tokens.MONO;
+  const GLASS = App.tokens.GLASS;
+
+  /* ── Constants ──────────────────────────────────────────────────────────── */
+  const TABS = [
+    { key: "all", label: "All" },
+    { key: "production", label: "Production" },
+    { key: "qa", label: "QA" },
+  ];
+  const STATUS_OPTIONS = ["pending", "active", "paused", "submitted", "approved", "rejected", "declined", "returned", "skipped"]
+    .map((s) => ({ label: s.charAt(0).toUpperCase() + s.slice(1), value: s }));
+  // Only fields the table shows and TaskRepository.get_tasks can sort on.
+  const SORT_OPTIONS = [
+    { label: "Created", value: "created_at" },
+    { label: "Finalised", value: "finalized_at" },
+    { label: "Status", value: "status" },
+  ];
+  const ORDER_OPTIONS = [
+    { label: "Newest first", value: "desc" },
+    { label: "Oldest first", value: "asc" },
+  ];
+  const LABEL_STYLE = "font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#64748b;white-space:nowrap";
+
+  /* ── State ──────────────────────────────────────────────────────────────── */
+  const state = {
+    page: 1,
+    pageSize: 10,
+    tab: "all",
+    search: "",
+    status: "",
+    queue: "",
+    sortBy: "",
+    sortOrder: "desc",
+    rows: [],
+    total: 0,
+    loading: false,
+    loaded: false,
+  };
+  let requestSeq = 0;
+
+  const hasFilters = () => !!(state.status || state.queue || state.sortBy || state.sortOrder !== "desc");
+
+  function buildQuery(withPaging) {
+    const p = new URLSearchParams();
+    if (state.search) p.set("search", state.search);
+    if (state.status) p.set("status", state.status);
+    if (state.tab !== "all") p.set("environment", state.tab);
+    if (state.queue) p.set("queue", state.queue);
+    if (state.sortBy) {
+      p.set("sort_by", state.sortBy);
+      p.set("sort_order", state.sortOrder || "desc");
+    }
+    if (withPaging) {
+      p.set("page", String(state.page));
+      p.set("page_size", String(state.pageSize));
+    }
+    const s = p.toString();
+    return s ? "?" + s : "";
+  }
+
+  /* ── Header strip: search left, tabs + Export Excel right ───────────────── */
+  const strip = App.el(
+    '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px"></div>',
+  );
+  const searchWrap = App.el('<div style="flex:1 1 260px;width:100%;max-width:384px;min-width:0"></div>');
+  const onSearch = App.debounce((value) => {
+    const next = String(value || "").trim();
+    if (next === state.search) return;
+    state.search = next;
+    state.page = 1;
+    load();
+  }, 300);
+  const search = App.searchBox({
+    placeholder: "Search tasks by name, id, batch or queue...",
+    onInput: onSearch,
+  });
+  searchWrap.appendChild(search);
+
+  const right = App.el('<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"></div>');
+  const tabsHost = App.el("<div></div>");
+  App.tabs(tabsHost, {
+    items: TABS,
+    active: state.tab,
+    activeStyle: "solid",
+    onChange: (key) => {
+      state.tab = key;
+      state.page = 1;
+      load();
+    },
+  });
+  const exportBtn = App.el(
+    '<button type="button" data-hover="btn-cancel" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 12px;' +
+      "border-radius:8px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;" +
+      'white-space:nowrap;transition:.15s">' +
+      App.icon("AiOutlineFileExcel", { size: 14 }) + "<span>Export Excel</span></button>",
+  );
+  exportBtn.addEventListener("click", exportExcel);
+  right.appendChild(tabsHost);
+  right.appendChild(exportBtn);
+  strip.appendChild(searchWrap);
+  strip.appendChild(right);
+
+  /* ── Filter bar: status / queue / sort / order / clear ──────────────────── */
+  const filterBar = App.el('<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"></div>');
+
+  const statusSel = App.select({
+    options: STATUS_OPTIONS,
+    placeholder: "All statuses",
+    allowEmpty: true,
+    glass: true,
+    width: 150,
+    onChange: (v) => { state.status = v || ""; state.page = 1; syncClear(); load(); },
+  });
+  const queueSel = App.select({
+    options: [],
+    placeholder: "All queues",
+    allowEmpty: true,
+    glass: true,
+    width: 200,
+    onChange: (v) => { state.queue = v || ""; state.page = 1; syncClear(); load(); },
+  });
+  const sortSel = App.select({
+    options: SORT_OPTIONS,
+    placeholder: "Sort by",
+    allowEmpty: true,
+    glass: true,
+    width: 150,
+    onChange: (v) => { state.sortBy = v || ""; state.page = 1; syncClear(); load(); },
+  });
+  const orderSel = App.select({
+    options: ORDER_OPTIONS,
+    value: state.sortOrder,
+    glass: true,
+    width: 150,
+    onChange: (v) => { state.sortOrder = v || "desc"; state.page = 1; syncClear(); load(); },
+  });
+  const sortGroup = App.el('<div style="display:flex;align-items:center;gap:6px"><span style="' + LABEL_STYLE + '">Sort</span></div>');
+  sortGroup.appendChild(sortSel);
+  const orderGroup = App.el('<div style="display:flex;align-items:center;gap:6px"><span style="' + LABEL_STYLE + '">Order</span></div>');
+  orderGroup.appendChild(orderSel);
+
+  const clearBtn = App.el(
+    '<button type="button" data-hover="linkbtn" style="display:none;padding:4px 8px;border:0;background:none;cursor:pointer;font-family:inherit;' +
+      'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#2563eb;transition:color .15s">Clear filters</button>',
+  );
+  clearBtn.addEventListener("click", () => {
+    state.status = "";
+    state.queue = "";
+    state.sortBy = "";
+    state.sortOrder = "desc";
+    state.page = 1;
+    statusSel.value = "";
+    queueSel.value = "";
+    sortSel.value = "";
+    orderSel.value = "desc";
+    syncClear();
+    load();
+  });
+  function syncClear() {
+    clearBtn.style.display = hasFilters() ? "inline-flex" : "none";
+  }
+
+  filterBar.appendChild(statusSel);
+  filterBar.appendChild(queueSel);
+  filterBar.appendChild(sortGroup);
+  filterBar.appendChild(orderGroup);
+  filterBar.appendChild(clearBtn);
+
+  /* ── Table panel ────────────────────────────────────────────────────────── */
+  const panel = App.el('<div style="' + GLASS + 'padding:16px;overflow:hidden"></div>');
+  const tableHost = App.el("<div></div>");
+  panel.appendChild(tableHost);
+
+  root.appendChild(strip);
+  root.appendChild(filterBar);
+  root.appendChild(panel);
+
+  /* ── Cell renderers ─────────────────────────────────────────────────────── */
+  const dash = '<span style="font-size:12px;color:#94a3b8">—</span>';
+
+  function taskCell(row) {
+    const id = String(row.id || "");
+    const name = row.dataset || row.task_name || row.file_name || ("Task " + id.slice(0, 8));
+    const preview = row.input_preview ? String(row.input_preview) : "";
+    const sub = preview
+      ? '<span title="' + escapeHtml(preview) + '" style="display:block;font-size:12px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        escapeHtml(preview) + "</span>"
+      : '<span style="display:block;font-size:10px;font-family:' + MONO + ';color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        escapeHtml(id.slice(0, 18)) + "…</span>";
+    return (
+      '<div style="padding:2px 0;min-width:0;max-width:420px">' +
+      '<span data-tip="' + escapeHtml(id) + '" style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+      escapeHtml(name) + "</span>" + sub + "</div>"
+    );
+  }
+
+  function queueCell(row) {
+    const q = row.queue_name || "—";
+    const batch = row.batch_name || "";
+    return (
+      '<div style="min-width:0;max-width:200px">' +
+      '<span title="' + escapeHtml(q) + '" style="display:block;font-size:13px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(q) + "</span>" +
+      (batch
+        ? '<span title="' + escapeHtml(batch) + '" style="display:block;font-size:11px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(batch) + "</span>"
+        : "") +
+      "</div>"
+    );
+  }
+
+  function annotationsBadge(row) {
+    const done = Number(row.submitted_count) || 0;
+    const required = Number(row.required_annotators) || 0;
+    const complete = required > 0 && done >= required;
+    const text = required > 0 ? done + "/" + required : String(done);
+    return (
+      '<span data-tip="' + done + " of " + (required || "?") + ' annotations submitted" style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO +
+      ";font-weight:700;font-size:12px;padding:2px 8px;border-radius:4px;background:" + (complete ? "#ecfdf5" : "#f1f5f9") +
+      ";color:" + (complete ? "#047857" : "#334155") + '">' + escapeHtml(text) + "</span>"
+    );
+  }
+
+  function personCell(name) {
+    if (!name) return dash;
+    return '<span title="' + escapeHtml(name) + '" style="display:inline-block;max-width:120px;font-size:12px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">' +
+      escapeHtml(name) + "</span>";
+  }
+
+  function dateCell(iso) {
+    if (!iso) return dash;
+    return '<span style="font-size:12px;color:#475569;white-space:nowrap">' + escapeHtml(fmt.dateTime(iso)) + "</span>";
+  }
+
+  const columns = [
+    {
+      title: "#", key: "index", width: 60, align: "center",
+      render: (_, i) =>
+        '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>",
+    },
+    { title: "Task", key: "task", render: taskCell },
+    { title: "Queue", key: "queue", width: 170, render: queueCell },
+    { title: "Type", key: "environment", width: 90, render: (r) => App.typePill(r.environment) },
+    { title: "Status", key: "status", width: 120, render: (r) => App.statusPill(r.status) },
+    { title: "Annotations", key: "annotations", width: 100, align: "center", render: annotationsBadge },
+    { title: "Finalised by", key: "finalized_by_name", width: 130, render: (r) => personCell(r.finalized_by_name) },
+    { title: "Created", key: "created_at", width: 140, render: (r) => dateCell(r.created_at) },
+    { title: "Finalised", key: "finalized_at", width: 140, render: (r) => dateCell(r.finalized_at) },
+  ];
+
+  /* ── Render + load ──────────────────────────────────────────────────────── */
+  function render() {
+    if (state.loading && !state.loaded) {
+      App.fill(tableHost, App.skeleton(8));
+      return;
+    }
+    App.table(tableHost, {
+      columns,
+      rows: state.rows,
+      rowKey: "id",
+      loading: state.loading,
+      minWidth: 1100,
+      emptyText: "No tasks found",
+      pagination: {
+        page: state.page,
+        pageSize: state.pageSize,
+        total: state.total,
+        showSizeChanger: true,
+        pageSizeOptions: [10, 25, 50, 100],
+        onChange: (page, size) => {
+          state.page = page;
+          if (size !== state.pageSize) {
+            state.pageSize = size;
+            state.page = 1;
+          }
+          load();
+        },
+      },
+    });
+  }
+
+  async function load() {
+    const seq = ++requestSeq;
+    state.loading = true;
+    render();
+    try {
+      const res = await App.api("/tasks/" + buildQuery(true));
+      if (seq !== requestSeq) return; // a newer request superseded this one
+      const items = Array.isArray(res) ? res : (res && res.items) || [];
+      const total = Array.isArray(res) ? res.length : res && res.total != null ? Number(res.total) : items.length;
+      state.rows = items;
+      state.total = total;
+      // If a delete elsewhere left us past the last page, snap back.
+      const lastPage = Math.max(1, Math.ceil(total / state.pageSize));
+      if (state.page > lastPage) {
+        state.page = lastPage;
+        state.loading = false;
+        state.loaded = true;
+        return load();
+      }
+    } catch (err) {
+      if (seq !== requestSeq) return;
+      App.toast.error(err.message || "Unable to load tasks.");
+    } finally {
+      if (seq === requestSeq) {
+        state.loading = false;
+        state.loaded = true;
+        render();
+      }
+    }
+  }
+
+  async function loadQueueNames() {
+    try {
+      const res = await App.api("/tasks/queue-names");
+      const list = Array.isArray(res) ? res : (res && res.items) || [];
+      const names = list
+        .map((n) => (typeof n === "string" ? n : n && (n.name || n.label || n.value)))
+        .filter((n) => !!n);
+      const current = queueSel.value;
+      // Keep the placeholder option; replace everything else.
+      Array.from(queueSel.options).slice(1).forEach((o) => o.remove());
+      names.forEach((n) => {
+        const o = document.createElement("option");
+        o.value = n;
+        o.textContent = n;
+        queueSel.appendChild(o);
+      });
+      queueSel.value = current;
+      if (queueSel.value !== current) queueSel.selectedIndex = 0;
+    } catch (err) {
+      App.toast.error(err.message || "Unable to load queue names.");
+    }
+  }
+
+  async function exportExcel() {
+    if (exportBtn.disabled) return;
+    App.setLoading(exportBtn, true);
+    try {
+      await App.download("/tasks/export" + buildQuery(false), "tasks_report.xlsx");
+      App.toast.success("Tasks exported to Excel successfully.");
+    } catch (err) {
+      App.toast.error(err.message || "Excel export failed.");
+    } finally {
+      App.setLoading(exportBtn, false);
+    }
+  }
+
+  syncClear();
+  loadQueueNames();
+  load();
+})();
+</script>
+</body>
+</html>

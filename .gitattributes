@@ -1,0 +1,4 @@
+# Shell scripts must use LF so the shebang works inside Linux containers,
+# regardless of the checkout platform's autocrlf setting.
+*.sh text eol=lf
+entrypoint.sh text eol=lf

@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspace · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+/* Only what inline styles cannot express: list-row hover, the responsive grid and the small-screen top bar. */
+[data-row=task]:not([data-selected]):hover{background:rgba(29,78,216,0.05)!important}
+@media (max-width:1279px){
+  [data-grid=main]{grid-template-columns:260px minmax(0,1fr)!important}
+  [data-panel=right]{display:none!important}
+  [data-slot=form]{display:block!important}
+}
+@media (max-width:860px){
+  [data-grid=main]{grid-template-columns:minmax(0,1fr)!important;grid-template-rows:260px minmax(0,1fr)}
+  [data-hide=md]{display:none!important}
+}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script src="js/annotation-form.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  // The workspace is reachable by assigned annotators (annotation_queues) and by queue managers (queues).
+  const perms = (profile && profile.permissions) || [];
+  if (!perms.includes("queues")) App.requirePermission("annotation_queues");
+  App.tooltipsInit();
+
+  const esc = App.escapeHtml;
+  const T = App.tokens;
+  const params = new URLSearchParams(location.search);
+  const queueId = params.get("queue") || "";
+  const requestedTaskId = params.get("task") || "";
+
+  /* ── Style recipes ───────────────────────────────────────────────────────── */
+  const GLASS_BAR =
+    "background:linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(238,243,255,0.55) 100%);" +
+    "backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);" +
+    "box-shadow:0 8px 24px rgba(43,44,124,0.08), inset 0 1px 0 rgba(255,255,255,0.6);";
+  const BTN_BASE =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 14px;border-radius:8px;" +
+    "font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;line-height:1;";
+  const BTN_DEFAULT = BTN_BASE + "border:1px solid #cbd5e1;background:#fff;color:#0f172a;";
+  const BTN_PRIMARY = BTN_BASE + "border:0;background:#1d4ed8;color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.05);";
+  const CHIP =
+    "display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;" +
+    "border:1px solid #e2e8f0;background:rgba(255,255,255,0.7);color:#475569;white-space:nowrap;";
+  const PROMPT_BOX =
+    "white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.65;color:#0f172a;background:rgba(255,255,255,0.6);" +
+    "border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:0;font-family:inherit;";
+  const MY_STATUS = {
+    not_started: { label: "Not started", tone: "slate" },
+    draft: { label: "Draft", tone: "amber" },
+    submitted: { label: "Submitted", tone: "emerald" },
+    returned: { label: "Returned", tone: "rose" },
+  };
+  const TAB_KEYS = ["all", "not_started", "draft", "submitted", "returned"];
+  const TAB_LABELS = { all: "All", not_started: "Not started", draft: "Draft", submitted: "Submitted", returned: "Returned" };
+
+  const displayName = profile.full_name || profile.username || profile.email || "Annotator";
+
+  /* ── State ───────────────────────────────────────────────────────────────── */
+  const state = {
+    taxonomy: null,
+    queue: null,          // QueueResponse
+    tasks: [],            // list rows from GET /workspace/queues/{id}
+    myDone: 0,
+    search: "",
+    tab: "all",
+    currentId: null,      // task id currently open
+    current: null,        // {task, my_annotation, editable}
+    form: null,           // AnnotationForm handle
+    lastSavedJson: "",    // JSON of the last value known by the server (or the initial value)
+    dirty: false,
+    saving: false,
+    savePromise: null,    // the in-flight PUT /draft (awaited by submit / guardUnsaved / explicit save)
+    saveAgain: false,
+    loadSeq: 0,           // guards against out-of-order task loads
+    elapsed: 0,
+    timerId: null,
+    timerRunning: false,
+  };
+
+  /* ── Skeleton DOM ────────────────────────────────────────────────────────── */
+  document.title = "Workspace · Prompt Attack Annotation";
+  document.body.setAttribute(
+    "style",
+    "margin:0;min-width:320px;height:100vh;overflow:hidden;display:flex;flex-direction:column;background:" + T.BODY_BG +
+      ";font-family:" + T.FONT + ";color:#0f172a",
+  );
+
+  const topBar = App.el(
+    '<header style="' + GLASS_BAR + 'box-sizing:border-box;height:60px;flex-shrink:0;padding:0 16px;display:flex;align-items:center;gap:16px;border-bottom:1px solid rgba(255,255,255,0.7)">' +
+      '<div style="display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 0">' +
+      '<button type="button" data-role="back" data-hover="btn-default" style="' + BTN_DEFAULT + 'flex-shrink:0">' +
+      App.icon("AiOutlineArrowLeft", { size: 14 }) + "<span>Annotation Queues</span></button>" +
+      '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+      '<span data-role="queue-name" style="font-size:15px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">Loading…</span>' +
+      '<span data-role="queue-type" style="flex-shrink:0"></span>' +
+      "</div></div>" +
+      '<div data-hide="md" style="display:flex;align-items:center;gap:12px;flex-shrink:0">' +
+      '<span data-role="task-pos" style="font-size:13px;font-weight:600;color:#334155;white-space:nowrap">Task — of —</span>' +
+      '<div data-role="progress" style="width:160px;flex-shrink:0"></div>' +
+      '<span data-role="done-text" style="font-size:12px;color:#475569;white-space:nowrap">0/0 submitted</span>' +
+      "</div>" +
+      '<div style="display:flex;align-items:center;gap:10px;flex:1 1 0;justify-content:flex-end;min-width:0">' +
+      '<div data-role="timer" data-tip="Time spent on this task" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:6px;' +
+      "background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.21);backdrop-filter:blur(12px) saturate(140%);-webkit-backdrop-filter:blur(12px) saturate(140%);" +
+      'box-shadow:0 2px 10px rgba(43,44,124,0.08);color:#2563eb;flex-shrink:0">' +
+      App.icon("AiOutlineClockCircle", { size: 12 }) +
+      '<span data-role="timer-text" style="font-family:' + T.MONO + ';font-weight:700;font-size:12px;font-variant-numeric:tabular-nums;line-height:1">00:00</span></div>' +
+      '<button type="button" data-role="save" data-hover="btn-default" data-tip="Save your progress as a draft" style="' + BTN_DEFAULT + '">' +
+      App.icon("AiOutlineSave", { size: 14 }) + "<span>Save draft</span></button>" +
+      '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '">' +
+      App.icon("AiOutlineSend", { size: 14 }) + "<span>Submit</span></button>" +
+      '<div data-tip="' + esc(displayName) + '" style="display:inline-flex;align-items:center;gap:8px;height:36px;padding:3px 10px 3px 4px;border-radius:999px;border:1px solid #e2e8f0;background:rgba(255,255,255,0.7);flex-shrink:0;min-width:0;box-sizing:border-box">' +
+      App.avatarInitial(displayName, 28) +
+      '<span data-hide="sm" style="font-size:13px;font-weight:600;color:#0f172a;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(displayName) + "</span>" +
+      "</div></div></header>",
+  );
+
+  const main = App.el(
+    '<main data-grid="main" style="display:grid;grid-template-columns:300px minmax(0,1fr) 440px;gap:16px;padding:16px;flex:1;min-height:0;box-sizing:border-box"></main>',
+  );
+
+  const leftPanel = App.el(
+    '<section data-panel="left" style="' + T.GLASS + 'display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden">' +
+      '<div style="padding:14px 14px 10px;display:flex;flex-direction:column;gap:10px;flex-shrink:0">' +
+      '<div data-role="search"></div>' +
+      '<div data-role="tabs"></div>' +
+      "</div>" +
+      '<div data-role="list" style="flex:1;min-height:0;overflow-y:auto;padding:0 8px 10px"></div>' +
+      "</section>",
+  );
+
+  const centrePanel = App.el(
+    '<section data-panel="centre" style="' + T.GLASS + 'min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
+      '<div style="padding:18px 20px 20px;display:flex;flex-direction:column;gap:14px;min-width:0">' +
+      '<div data-role="centre-body" style="display:flex;flex-direction:column;gap:14px;min-width:0"></div>' +
+      '<div data-slot="form" style="display:none;border-top:1px dashed #e2e8f0;padding-top:16px;min-width:0"></div>' +
+      "</div></section>",
+  );
+
+  const rightPanel = App.el(
+    '<section data-panel="right" style="' + T.GLASS + 'min-height:0;min-width:0;overflow-y:auto;box-sizing:border-box">' +
+      '<div data-role="right-body" style="padding:18px 20px 20px;min-width:0"></div>' +
+      "</section>",
+  );
+
+  // The form block moves between the right panel and the centre column below 1280px.
+  const formBlock = App.el(
+    '<div data-role="form-block" style="display:flex;flex-direction:column;gap:14px;min-width:0">' +
+      '<div data-role="banner"></div>' +
+      '<div data-role="submit-errors" style="display:none"></div>' +
+      '<div data-role="form"></div>' +
+      "</div>",
+  );
+
+  main.appendChild(leftPanel);
+  main.appendChild(centrePanel);
+  main.appendChild(rightPanel);
+  document.body.appendChild(topBar);
+  document.body.appendChild(main);
+
+  const R = (role, root) => App.qs('[data-role="' + role + '"]', root || document);
+  const els = {
+    back: R("back", topBar),
+    queueName: R("queue-name", topBar),
+    queueType: R("queue-type", topBar),
+    taskPos: R("task-pos", topBar),
+    progress: R("progress", topBar),
+    doneText: R("done-text", topBar),
+    timer: R("timer", topBar),
+    timerText: R("timer-text", topBar),
+    save: R("save", topBar),
+    submit: R("submit", topBar),
+    search: R("search", leftPanel),
+    tabs: R("tabs", leftPanel),
+    list: R("list", leftPanel),
+    centreBody: R("centre-body", centrePanel),
+    formSlot: App.qs('[data-slot="form"]', centrePanel),
+    rightBody: R("right-body", rightPanel),
+    banner: R("banner", formBlock),
+    submitErrors: R("submit-errors", formBlock),
+    form: R("form", formBlock),
+  };
+
+  const narrowQuery = window.matchMedia("(max-width:1279px)");
+  function placeFormBlock() {
+    const host = narrowQuery.matches ? els.formSlot : els.rightBody;
+    if (formBlock.parentNode !== host) host.appendChild(formBlock);
+  }
+  if (typeof narrowQuery.addEventListener === "function") narrowQuery.addEventListener("change", placeFormBlock);
+  else if (typeof narrowQuery.addListener === "function") narrowQuery.addListener(placeFormBlock);
+  placeFormBlock();
+
+  /* ── Helpers ─────────────────────────────────────────────────────────────── */
+  function fmtClock(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const r = s % 60;
+    const p = (n) => String(n).padStart(2, "0");
+    return h ? h + ":" + p(m) + ":" + p(r) : p(m) + ":" + p(r);
+  }
+  function labelOf(field, value) {
+    const tax = state.taxonomy || {};
+    const list = Array.isArray(tax[field]) ? tax[field] : [];
+    const hit = list.find((o) => String(o.value) === String(value));
+    return hit ? hit.label : value == null ? "" : String(value);
+  }
+  function stringify(v) {
+    if (v == null) return "";
+    if (typeof v === "object") { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+    return String(v);
+  }
+  function currentValueJson() {
+    return state.form ? JSON.stringify(state.form.getValue()) : "";
+  }
+  function isEditable() {
+    return !!(state.current && state.current.editable);
+  }
+  function findTask(id) {
+    return state.tasks.find((t) => t.id === id) || null;
+  }
+  /** A task I can still edit: not submitted by me and not locked (status submitted/approved). */
+  function isOpenTask(t) {
+    return t.my_status !== "submitted" && t.status !== "submitted" && t.status !== "approved";
+  }
+  function nextOpenTaskId(fromId) {
+    const idx = state.tasks.findIndex((t) => t.id === fromId);
+    const order = state.tasks.slice(idx + 1).concat(state.tasks.slice(0, Math.max(0, idx)));
+    const hit = order.find(isOpenTask);
+    return hit ? hit.id : null;
+  }
+
+  /** Values a spreadsheet seeded into meta_data that are valid taxonomy choices (used only for a fresh, never-saved task). */
+  function seedFromMeta(meta) {
+    const tax = state.taxonomy || {};
+    const out = {};
+    if (!meta || typeof meta !== "object") return out;
+    const valid = (field, v) => Array.isArray(tax[field]) && tax[field].some((o) => String(o.value) === String(v));
+    ["data_type", "data_structure", "domain", "role", "language", "intention", "source"].forEach((k) => {
+      const v = meta[k];
+      if (typeof v === "string" && v.trim() && valid(k, v.trim())) out[k] = v.trim();
+    });
+    const list = (v) => (Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : []).map((x) => String(x).trim()).filter(Boolean);
+    const types = list(meta.attack_type).filter((t) => valid("attack_type", t));
+    if (types.length) out.attack_type = types;
+    const subs = list(meta.attack_subcategory);
+    if (subs.length) out.attack_subcategory = subs;
+    ["verified", "document_edited"].forEach((k) => {
+      const v = meta[k];
+      if (typeof v === "boolean") out[k] = v;
+      else if (typeof v === "string" && /^(true|false|yes|no|1|0)$/i.test(v.trim())) out[k] = /^(true|yes|1)$/i.test(v.trim());
+    });
+    if (typeof meta.source_description === "string" && meta.source_description.trim()) out.source_description = meta.source_description;
+    return out;
+  }
+
+  /* ── Timer ───────────────────────────────────────────────────────────────── */
+  function paintTimer() {
+    els.timerText.textContent = fmtClock(state.elapsed);
+    const on = state.timerRunning;
+    const color = on ? "#2563eb" : "#64748b";
+    els.timer.style.color = color;
+    els.timer.style.background = on ? "rgba(37,99,235,0.08)" : "rgba(100,116,139,0.10)";
+    els.timer.style.borderColor = on ? "rgba(37,99,235,0.21)" : "rgba(100,116,139,0.25)";
+  }
+  function stopTimer() {
+    if (state.timerId) clearInterval(state.timerId);
+    state.timerId = null;
+    state.timerRunning = false;
+    paintTimer();
+  }
+  function startTimer() {
+    stopTimer();
+    if (!isEditable()) return;
+    state.timerRunning = true;
+    state.timerId = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      state.elapsed += 1;
+      els.timerText.textContent = fmtClock(state.elapsed);
+    }, 1000);
+    paintTimer();
+  }
+
+  /* ── Top bar ─────────────────────────────────────────────────────────────── */
+  function paintTopBar() {
+    const q = state.queue;
+    els.queueName.textContent = q ? q.name : "Queue";
+    els.queueType.innerHTML = q ? App.typePill(q.annotation_type || "production") : "";
+    const total = state.tasks.length;
+    const cur = state.current && state.current.task;
+    const seq = cur ? cur.sequence : findTask(state.currentId) ? findTask(state.currentId).sequence : null;
+    els.taskPos.textContent = "Task " + (seq == null ? "—" : seq) + " of " + total;
+    const pct = total ? (state.myDone / total) * 100 : 0;
+    els.progress.innerHTML = App.progress(pct, "#1d4ed8", false);
+    els.doneText.textContent = state.myDone + "/" + total + " submitted";
+    const editable = isEditable();
+    App.setDisabled(els.save, !editable);
+    App.setDisabled(els.submit, !editable);
+  }
+
+  /* ── Left panel ──────────────────────────────────────────────────────────── */
+  function counts() {
+    const c = { all: state.tasks.length, not_started: 0, draft: 0, submitted: 0, returned: 0 };
+    state.tasks.forEach((t) => { const k = t.my_status || "not_started"; if (c[k] != null) c[k] += 1; });
+    return c;
+  }
+  function paintTabs() {
+    const c = counts();
+    // App.tabs re-renders itself on click, so onChange repaints through paintTabs() to keep the wrap style.
+    const group = App.tabs(els.tabs, {
+      items: TAB_KEYS.map((k) => ({ key: k, label: TAB_LABELS[k] + " (" + c[k] + ")" })),
+      active: state.tab,
+      activeStyle: "tint",
+      onChange: (key) => { state.tab = key; paintTabs(); paintList(); },
+    });
+    if (group) { group.style.display = "flex"; group.style.flexWrap = "wrap"; }
+  }
+  function filteredTasks() {
+    const q = state.search.trim().toLowerCase();
+    return state.tasks.filter((t) => {
+      if (state.tab !== "all" && (t.my_status || "not_started") !== state.tab) return false;
+      if (!q) return true;
+      return String(t.dataset || "").toLowerCase().includes(q) || String(t.preview || "").toLowerCase().includes(q);
+    });
+  }
+  function rowHtml(t) {
+    const st = MY_STATUS[t.my_status] || MY_STATUS.not_started;
+    const tone = App.TONES[st.tone];
+    const selected = t.id === state.currentId;
+    return (
+      '<div data-row="task" data-id="' + esc(t.id) + '"' + (selected ? ' data-selected=""' : "") + ' role="button" tabindex="0" style="display:flex;flex-direction:column;gap:3px;padding:9px 10px;margin:2px 0;border-radius:10px;cursor:pointer;transition:background .15s;' +
+      (selected ? "background:rgba(29,78,216,0.10);" : "background:transparent;") + '">' +
+      '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+      '<span style="width:7px;height:7px;border-radius:9999px;background:' + tone.dot + ';flex-shrink:0" title="' + esc(st.label) + '"></span>' +
+      '<span style="flex:1;min-width:0;font-size:13px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+      '<span style="font-family:' + T.MONO + ';color:#64748b;font-weight:600">#' + esc(t.sequence) + "</span> · " + esc(t.dataset || "—") + "</span>" +
+      '<span style="' + "display:inline-flex;align-items:center;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;line-height:1.5;border:1px solid " +
+      tone.border + ";background:" + tone.bg + ";color:" + tone.text + ';flex-shrink:0">' + esc(st.label) + "</span>" +
+      "</div>" +
+      '<div style="font-size:12px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-left:15px">' + esc(t.preview || "(empty prompt)") + "</div>" +
+      '<div style="font-size:11px;color:#94a3b8;padding-left:15px">' + esc(t.submitted_count || 0) + "/" + esc(t.required_annotators || (state.queue && state.queue.required_annotators) || 3) + " submitted · " +
+      esc(String(t.status || "pending").replace(/_/g, " ")) + "</div>" +
+      "</div>"
+    );
+  }
+  function paintList() {
+    const rows = filteredTasks();
+    if (!rows.length) {
+      els.list.innerHTML = App.emptyState(state.tasks.length ? "No tasks match this filter" : "This queue has no tasks");
+      return;
+    }
+    els.list.innerHTML = rows.map(rowHtml).join("");
+  }
+  const paintListDebounced = App.debounce(paintList, 150);
+  function markSelectedRow() {
+    App.qsa("[data-row=task]", els.list).forEach((row) => {
+      const on = row.dataset.id === state.currentId;
+      if (on) { row.setAttribute("data-selected", ""); row.style.background = "rgba(29,78,216,0.10)"; }
+      else { row.removeAttribute("data-selected"); row.style.background = "transparent"; }
+    });
+    const sel = App.qs("[data-row=task][data-selected]", els.list);
+    if (sel && typeof sel.scrollIntoView === "function") {
+      try { sel.scrollIntoView({ block: "nearest" }); } catch (e) { /* ignore */ }
+    }
+  }
+  els.list.addEventListener("click", (e) => {
+    const row = e.target.closest && e.target.closest("[data-row=task]");
+    if (row) selectTask(row.dataset.id);
+  });
+  els.list.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target.closest && e.target.closest("[data-row=task]");
+    if (row) { e.preventDefault(); selectTask(row.dataset.id); }
+  });
+  els.search.appendChild(
+    App.searchBox({
+      placeholder: "Search dataset or prompt…",
+      onInput: (v) => { state.search = v; paintListDebounced(); },
+    }),
+  );
+
+  /* ── Centre panel ────────────────────────────────────────────────────────── */
+  function metaTable(meta) {
+    const keys = Object.keys(meta || {});
+    if (!keys.length) return null;
+    const wrap = App.el(
+      '<div style="border:1px solid #e2e8f0;border-radius:12px;background:rgba(255,255,255,0.5);overflow:hidden">' +
+        '<button type="button" data-role="toggle" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 14px;border:0;background:transparent;cursor:pointer;font-family:inherit;color:#334155;text-align:left">' +
+        '<span style="display:flex;align-items:center;gap:8px">' + App.icon("AiOutlineTable", { size: 14, color: "#64748b" }) +
+        '<span style="font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase">Seed metadata from sheet</span>' +
+        '<span style="font-family:' + T.MONO + ';font-size:11px;font-weight:700;background:#f1f5f9;color:#334155;padding:1px 6px;border-radius:4px">' + keys.length + "</span></span>" +
+        '<span data-role="chev" style="display:inline-flex;transition:transform .2s;color:#94a3b8">' + App.icon("AiOutlineDown", { size: 12 }) + "</span></button>" +
+        '<div data-role="body" style="display:none;border-top:1px solid #f1f5f9;overflow-x:auto">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:13px;color:#0f172a">' +
+        keys.map((k) =>
+          '<tr><td style="padding:7px 14px;border-bottom:1px solid #f1f5f9;font-family:' + T.MONO + ';font-size:12px;color:#475569;white-space:nowrap;width:1%;vertical-align:top">' + esc(k) + "</td>" +
+          '<td style="padding:7px 14px;border-bottom:1px solid #f1f5f9;word-break:break-word;vertical-align:top">' + esc(stringify(meta[k])) + "</td></tr>",
+        ).join("") +
+        "</table></div></div>",
+    );
+    const body = R("body", wrap);
+    const chev = R("chev", wrap);
+    R("toggle", wrap).addEventListener("click", () => {
+      const open = body.style.display === "none";
+      body.style.display = open ? "block" : "none";
+      chev.style.transform = open ? "rotate(180deg)" : "";
+    });
+    return wrap;
+  }
+
+  function paintCentre() {
+    const cur = state.current;
+    const body = els.centreBody;
+    body.innerHTML = "";
+    if (!cur) {
+      body.innerHTML = App.emptyState(state.tasks.length ? "Select a task from the list to start annotating" : "This queue has no tasks yet");
+      return;
+    }
+    const task = cur.task;
+    const mine = cur.my_annotation;
+    const chars = task.data_length_chars != null ? task.data_length_chars : String(task.input_text || "").length;
+    const required = task.required_annotators || (state.queue && state.queue.required_annotators) || 3;
+    const header = App.el(
+      '<div style="display:flex;flex-direction:column;gap:10px;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0">' +
+        '<span style="font-size:16px;font-weight:600;color:#0f172a;word-break:break-word">' + esc(task.dataset || "Task " + task.sequence) + "</span>" +
+        '<span style="font-family:' + T.MONO + ';font-size:12px;color:#94a3b8">#' + esc(task.sequence) + "</span>" +
+        "</div>" +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+        '<span style="' + CHIP + '">' + App.icon("AiOutlineFileText", { size: 12, color: "#94a3b8" }) + esc(Number(chars).toLocaleString("en-US")) + " chars</span>" +
+        (task.data_length_bucket ? '<span style="' + CHIP + '">' + esc(task.data_length_bucket) + "</span>" : "") +
+        '<span style="' + CHIP + '">' + App.icon("AiOutlineTag", { size: 12, color: "#94a3b8" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
+        App.statusPill(task.status) +
+        '<span style="' + CHIP + 'font-family:' + T.MONO + ';font-weight:700">' + esc(task.submitted_count || 0) + "/" + esc(required) + '</span><span style="font-size:12px;color:#64748b;margin-left:-4px">annotators submitted</span>' +
+        "</div></div>",
+    );
+    body.appendChild(header);
+
+    const returned = task.status === "returned" || (mine && mine.status === "returned");
+    if (returned) {
+      body.appendChild(
+        App.el(
+          '<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e">' +
+            App.icon("AiOutlineRollback", { size: 16, color: "#d97706", style: "flex-shrink:0;margin-top:1px" }) +
+            '<div style="min-width:0"><div style="font-size:13px;font-weight:600">Returned for rework by QA</div>' +
+            '<div style="font-size:13px;line-height:1.5;margin-top:2px;white-space:pre-wrap;word-break:break-word">' +
+            (task.qa_notes ? esc(task.qa_notes) : "No notes were provided. Review your annotation and resubmit.") + "</div></div></div>",
+        ),
+      );
+    }
+
+    body.appendChild(App.el('<div style="' + PROMPT_BOX + '"></div>')).textContent = task.input_text || "";
+    const meta = metaTable(task.meta_data);
+    if (meta) body.appendChild(meta);
+    centrePanel.scrollTop = 0;
+  }
+
+  /* ── Right panel: banner + form ──────────────────────────────────────────── */
+  function bannerHtml(kind, title, text) {
+    const tone = App.TONES[kind] || App.TONES.slate;
+    const iconName = { emerald: "AiOutlineCheckCircle", amber: "AiOutlineRollback", blue: "AiOutlineSave", purple: "AiOutlineFileProtect", rose: "AiOutlineWarning" }[kind] || "AiOutlineInfoCircle";
+    return (
+      '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid ' + tone.border + ";background:" + tone.bg + ";color:" + tone.text + '">' +
+      App.icon(iconName, { size: 15, style: "flex-shrink:0;margin-top:1px" }) +
+      '<div style="min-width:0;font-size:12.5px;line-height:1.45"><div style="font-weight:600">' + esc(title) + "</div>" +
+      (text ? "<div>" + esc(text) + "</div>" : "") + "</div></div>"
+    );
+  }
+  function paintBanner() {
+    const cur = state.current;
+    if (!cur) { els.banner.innerHTML = ""; return; }
+    const mine = cur.my_annotation;
+    const task = cur.task;
+    let html;
+    if (mine && mine.status === "submitted") {
+      html = bannerHtml("emerald", "Submitted on " + App.fmt.dateTime(mine.submitted_at), "This annotation is read-only. " + (task.status === "approved" ? "The task has been finalised by QA." : task.status === "submitted" ? "The task is awaiting QA review." : "You can no longer change it."));
+    } else if (!cur.editable) {
+      html = bannerHtml("purple", task.status === "approved" ? "Task finalised by QA" : "Task moved to QA", "Enough annotators have submitted, so this task is read-only.");
+    } else if (mine && mine.status === "returned") {
+      html = bannerHtml("amber", "Returned by QA — editable", "Update the annotation below and submit it again." + (mine.updated_at ? " Last change " + App.fmt.dateTime(mine.updated_at) + "." : ""));
+    } else if (mine && mine.status === "draft") {
+      html = state.dirty
+        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save draft.")
+        : bannerHtml("blue", "Draft saved at " + App.fmt.time(mine.updated_at), "Your progress is stored. Submit when the annotation is complete.");
+    } else {
+      html = state.dirty
+        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save draft.")
+        : bannerHtml("slate", "Not started", "Fill in the form; drafts are saved automatically as you work.");
+    }
+    els.banner.innerHTML = html;
+  }
+  function showSubmitErrors(list) {
+    if (!list || !list.length) { els.submitErrors.style.display = "none"; els.submitErrors.innerHTML = ""; return; }
+    els.submitErrors.style.display = "block";
+    els.submitErrors.innerHTML =
+      '<div style="padding:10px 12px;border-radius:10px;border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;font-size:12.5px;line-height:1.5">' +
+      '<div style="display:flex;align-items:center;gap:8px;font-weight:600">' + App.icon("AiOutlineCloseCircle", { size: 14 }) + "The server rejected the submission</div>" +
+      '<ul style="margin:6px 0 0;padding-left:18px">' + list.map((m) => "<li>" + esc(m) + "</li>").join("") + "</ul></div>";
+  }
+
+  function mountForm() {
+    if (state.form) { state.form.destroy(); state.form = null; }
+    const cur = state.current;
+    els.form.innerHTML = "";
+    showSubmitErrors(null);
+    if (!cur) return;
+    const mine = cur.my_annotation;
+    let value = mine && mine.data && typeof mine.data === "object" && Object.keys(mine.data).length ? mine.data : null;
+    if (!value) value = Object.assign(AnnotationForm.emptyValue(state.taxonomy), seedFromMeta(cur.task.meta_data));
+    state.form = AnnotationForm.mount(els.form, {
+      taxonomy: state.taxonomy,
+      value,
+      readOnly: !cur.editable,
+      onChange: onFormChange,
+    });
+    state.lastSavedJson = currentValueJson();
+    state.dirty = false;
+  }
+
+  /* ── Draft saving ────────────────────────────────────────────────────────── */
+  const autosave = App.debounce(() => { saveDraft({ silent: true }); }, 1500);
+
+  function onFormChange() {
+    if (!isEditable()) return;
+    showSubmitErrors(null);
+    const dirty = currentValueJson() !== state.lastSavedJson;
+    if (dirty !== state.dirty) { state.dirty = dirty; paintBanner(); }
+    if (dirty) autosave();
+  }
+
+  /** applyPayload: merge a GET/PUT/POST workspace payload into state for the open task. */
+  function applyPayload(payload) {
+    if (!payload || !payload.task) return;
+    state.current = { task: payload.task, my_annotation: payload.my_annotation || null, editable: !!payload.editable };
+    const row = findTask(payload.task.id);
+    if (row) {
+      row.status = payload.task.status;
+      row.submitted_count = payload.task.submitted_count;
+      row.my_status = payload.my_annotation ? payload.my_annotation.status : "not_started";
+    }
+  }
+
+  /** Wait for an in-flight draft PUT (if any) so a later request cannot race it. */
+  async function awaitPendingSave() {
+    if (state.saving && state.savePromise) { try { await state.savePromise; } catch (e) { /* already toasted */ } }
+  }
+
+  function saveDraft(opts) {
+    const o = opts || {};
+    if (!isEditable() || !state.form) return Promise.resolve(false);
+    if (state.saving) { state.saveAgain = true; return state.savePromise || Promise.resolve(false); }
+    const taskId = state.currentId;
+    const seq = state.loadSeq;
+    const data = state.form.getValue();
+    const json = JSON.stringify(data);
+    state.saving = true;
+    if (!o.silent) App.setLoading(els.save, true);
+    state.savePromise = (async () => {
+      try {
+        const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/draft", {
+          method: "PUT",
+          body: { data, elapsed_seconds: Math.floor(state.elapsed) },
+        });
+        if (seq !== state.loadSeq || taskId !== state.currentId) return true; // user moved on; nothing to paint
+        const wasEditable = isEditable();
+        applyPayload(payload);
+        state.lastSavedJson = json;
+        state.dirty = currentValueJson() !== json;
+        if (wasEditable !== isEditable()) { state.form.setReadOnly(!isEditable()); startTimer(); }
+        paintBanner();
+        paintTabs();
+        paintList();
+        paintTopBar();
+        if (!o.silent) App.toast.success("Draft saved.");
+        return true;
+      } catch (err) {
+        if (seq === state.loadSeq) App.toast.error(err.message);
+        return false;
+      } finally {
+        state.saving = false;
+        state.savePromise = null;
+        if (!o.silent) App.setLoading(els.save, false);
+        // Reschedule against the LIVE task (the finished save may belong to a task the user already left).
+        if (state.saveAgain) { state.saveAgain = false; if (isEditable() && state.dirty) autosave(); }
+      }
+    })();
+    return state.savePromise;
+  }
+
+  /** Explicit "Save draft" (button / Ctrl+S): never bail out silently while an autosave is in flight. */
+  async function saveDraftNow() {
+    autosave.cancel();
+    await awaitPendingSave();
+    autosave.cancel();
+    if (!isEditable()) return;
+    await saveDraft({ silent: false });
+  }
+
+  /* ── Submit ──────────────────────────────────────────────────────────────── */
+  async function submitTask() {
+    if (!isEditable() || !state.form) return;
+    const errors = state.form.validate();
+    if (errors.length) return;
+    autosave.cancel();
+    const taskId = state.currentId;
+    const seq = state.loadSeq;
+    App.setLoading(els.submit, true);
+    App.setDisabled(els.save, true);
+    try {
+      // A silent autosave may still be in flight: let it land first so a late PUT cannot revert the submit.
+      await awaitPendingSave();
+      autosave.cancel();
+      if (seq !== state.loadSeq || !isEditable() || !state.form) return;
+      const data = state.form.getValue();
+      const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/submit", {
+        method: "POST",
+        body: { data, elapsed_seconds: Math.floor(state.elapsed) },
+      });
+      if (seq !== state.loadSeq) return;
+      applyPayload(payload);
+      state.lastSavedJson = JSON.stringify(data);
+      state.dirty = false;
+      showSubmitErrors(null);
+      App.toast.success("Annotation submitted.");
+      // Refresh counts (my_done, statuses) without disturbing the selection.
+      await loadQueue({ keepSelection: true });
+      // The server's next_task_id already wraps around and skips locked tasks (null = nothing editable left);
+      // the client search is only a fallback for a stale/missing id and applies the same predicate.
+      const nextId = (payload.next_task_id && findTask(payload.next_task_id) ? payload.next_task_id : null) || nextOpenTaskId(taskId);
+      if (nextId) {
+        await openTask(nextId);
+      } else {
+        App.toast.info("All tasks submitted — nothing left in this queue.");
+        await openTask(taskId);
+      }
+    } catch (err) {
+      if (seq !== state.loadSeq) return;
+      const list = err && err.payload && Array.isArray(err.payload.errors) ? err.payload.errors.map(String) : null;
+      if (list && list.length) {
+        showSubmitErrors(list);
+        App.toast.error(list.length === 1 ? list[0] : "Submission rejected: " + list.length + " issues.");
+      } else {
+        App.toast.error(err.message);
+      }
+    } finally {
+      App.setLoading(els.submit, false);
+      paintTopBar();
+    }
+  }
+
+  /* ── Task loading ────────────────────────────────────────────────────────── */
+  async function openTask(taskId) {
+    autosave.cancel();
+    stopTimer();
+    state.currentId = taskId;
+    state.loadSeq += 1;
+    const seq = state.loadSeq;
+    state.current = null;
+    state.dirty = false;
+    showSubmitErrors(null);
+    markSelectedRow();
+    paintTopBar();
+    els.centreBody.innerHTML = App.skeleton(6);
+    els.banner.innerHTML = "";
+    if (state.form) { state.form.destroy(); state.form = null; }
+    els.form.innerHTML = App.skeleton(8);
+    try {
+      const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId));
+      if (seq !== state.loadSeq) return;
+      applyPayload(payload);
+      state.elapsed = Number(payload.my_annotation && payload.my_annotation.elapsed_seconds) || 0;
+      paintCentre();
+      mountForm();
+      paintBanner();
+      paintTabs();
+      paintList();
+      markSelectedRow();
+      paintTopBar();
+      startTimer();
+    } catch (err) {
+      if (seq !== state.loadSeq) return;
+      state.current = null;
+      state.currentId = null; // let the user click the same row again to retry
+      markSelectedRow();
+      els.centreBody.innerHTML = App.emptyState(esc(err.message));
+      els.form.innerHTML = "";
+      paintBanner();
+      paintTopBar();
+      App.toast.error(err.message);
+    }
+  }
+
+  async function guardUnsaved() {
+    // state.dirty stays true until the autosave response lands; let an in-flight save finish before asking.
+    await awaitPendingSave();
+    if (!state.dirty || !isEditable()) return true;
+    // Hold the debounced autosave while the dialog is open so "Discard" cannot be undone by a timer firing under it.
+    autosave.cancel();
+    const ok = await App.confirm({
+      title: "Discard unsaved changes?",
+      content: "Your latest edits to this annotation have not been saved as a draft yet.",
+      okText: "Discard",
+      danger: true,
+    });
+    if (ok) {
+      autosave.cancel();
+      state.dirty = false;
+    } else if (state.dirty && isEditable()) {
+      autosave(); // user kept editing: re-arm so the pending edits still get saved
+    }
+    return ok;
+  }
+
+  async function selectTask(taskId) {
+    if (!taskId || taskId === state.currentId) return;
+    if (!(await guardUnsaved())) return;
+    await openTask(taskId);
+  }
+
+  /* ── Queue loading ───────────────────────────────────────────────────────── */
+  async function loadQueue(opts) {
+    const o = opts || {};
+    const data = await App.api("/workspace/queues/" + encodeURIComponent(queueId));
+    state.queue = data.queue || null;
+    state.tasks = Array.isArray(data.tasks) ? data.tasks.slice().sort((a, b) => (a.sequence || 0) - (b.sequence || 0)) : [];
+    state.myDone = Number(data.my_done) || 0;
+    if (o.keepSelection && state.currentId && !findTask(state.currentId)) state.currentId = null;
+    paintTopBar();
+    paintTabs();
+    paintList();
+    markSelectedRow();
+  }
+
+  /* ── Wire up chrome ──────────────────────────────────────────────────────── */
+  els.back.addEventListener("click", async () => {
+    if (!(await guardUnsaved())) return;
+    location.href = "annotation-queues.html";
+  });
+  els.save.addEventListener("click", () => { saveDraftNow(); });
+  els.submit.addEventListener("click", submitTask);
+  window.addEventListener("beforeunload", (e) => {
+    if (!state.dirty || !isEditable()) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      if (isEditable()) saveDraftNow();
+    }
+  });
+  paintTimer();
+  paintTopBar();
+
+  /* ── Boot ────────────────────────────────────────────────────────────────── */
+  if (!queueId) {
+    App.toast.error("No queue selected.");
+    els.centreBody.innerHTML = App.emptyState('Open this page from <a href="annotation-queues.html" data-hover="link" style="color:#1d4ed8;text-decoration:none">Annotation Queues</a>.');
+    els.list.innerHTML = "";
+    return;
+  }
+  els.list.innerHTML = App.skeleton(6);
+  els.centreBody.innerHTML = App.skeleton(6);
+  els.form.innerHTML = App.skeleton(8);
+  // The taxonomy is fetched in parallel but is NOT fatal: AnnotationForm ships a built-in fallback.
+  const taxonomyRequest = App.api("/annotation/taxonomy").catch(() => {
+    App.toast.warning("Taxonomy unavailable — using built-in defaults.");
+    return null;
+  });
+  try {
+    await loadQueue();
+  } catch (err) {
+    App.toast.error(err.message);
+    els.list.innerHTML = "";
+    els.form.innerHTML = "";
+    els.centreBody.innerHTML = App.emptyState(
+      esc(err.message) + '<br><a href="annotation-queues.html" data-hover="link" style="color:#1d4ed8;text-decoration:none;font-size:13px">Back to Annotation Queues</a>',
+    );
+    return;
+  }
+  state.taxonomy = await taxonomyRequest;
+  const first =
+    (requestedTaskId && findTask(requestedTaskId) && requestedTaskId) ||
+    (state.tasks.find((t) => t.my_status !== "submitted") || state.tasks[0] || {}).id ||
+    null;
+  if (first) await openTask(first);
+  else {
+    els.form.innerHTML = "";
+    paintCentre();
+  }
+})();
+</script>
+</body>
+</html>

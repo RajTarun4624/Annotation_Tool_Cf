@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Only what inline styles cannot express: the responsive stack of the two-column grid. */
+  @media (max-width: 900px) {
+    #profile-grid { grid-template-columns: 1fr !important; }
+  }
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  App.requirePermission("profile");
+  const root = App.renderShell({ page: "profile", title: "Profile", subtitle: "Your account, access and active sessions." });
+
+  const H = App.escapeHtml;
+  const T = App.tokens;
+  const MONO = T.MONO;
+
+  /* ── Style recipes ──────────────────────────────────────────────────────── */
+  const CARD = T.GLASS + "padding:20px;box-sizing:border-box;min-width:0;";
+  const LABEL = "font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155;";
+  const HINT = "font-size:12px;color:#64748b;margin-top:2px;";
+  const KEY = "font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#64748b;";
+  const VALUE = "font-size:13.5px;color:#0f172a;margin-top:2px;";
+  const BTN_BASE =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:8px;" +
+    "font-size:14px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
+  const BTN_PRIMARY = BTN_BASE + "font-weight:600;background:#1d4ed8;color:#fff;border:0;box-shadow:0 1px 2px rgba(0,0,0,.05);";
+  const BTN_DANGER_OUTLINE = BTN_BASE + "font-weight:500;background:#fff;color:#b91c1c;border:1px solid #fecaca;";
+  const BTN_ICON =
+    "display:inline-flex;align-items:center;justify-content:center;height:32px;width:32px;border-radius:4px;border:0;" +
+    "background:transparent;color:#000;cursor:pointer;padding:0;transition:.15s;";
+  const MONO_BADGE =
+    "display:inline-flex;align-items:center;justify-content:center;font-family:" + MONO +
+    ";font-weight:700;font-size:12px;background:#f1f5f9;color:#334155;padding:2px 8px;border-radius:4px;white-space:nowrap;";
+
+  /* ── Small helpers ──────────────────────────────────────────────────────── */
+  // The sessions endpoint appends "Z" to isoformat(); a tz-aware value would end in "+00:00Z".
+  const normIso = (v) => (typeof v === "string" ? v.replace(/([+-]\d{2}:\d{2})Z$/, "$1") : v);
+
+  function uaShort(ua) {
+    const s = String(ua || "");
+    if (!s || /^unknown device$/i.test(s)) return "Unknown device";
+    let browser = "Unknown browser";
+    if (/Edg\//.test(s)) browser = "Edge";
+    else if (/OPR\/|Opera/.test(s)) browser = "Opera";
+    else if (/SamsungBrowser/.test(s)) browser = "Samsung Internet";
+    else if (/Firefox\//.test(s)) browser = "Firefox";
+    else if (/Chrome\//.test(s) && !/Chromium/.test(s)) browser = "Chrome";
+    else if (/Chromium/.test(s)) browser = "Chromium";
+    else if (/Safari\//.test(s) && /Version\//.test(s)) browser = "Safari";
+    else if (/python-requests|curl|PostmanRuntime|httpx|node-fetch|axios/i.test(s)) browser = "API client";
+    let os = "";
+    if (/Windows/.test(s)) os = "Windows";
+    else if (/iPhone|iPad|iPod/.test(s)) os = "iOS";
+    else if (/Android/.test(s)) os = "Android";
+    else if (/Mac OS X|Macintosh/.test(s)) os = "macOS";
+    else if (/CrOS/.test(s)) os = "ChromeOS";
+    else if (/Linux/.test(s)) os = "Linux";
+    return os ? browser + " on " + os : browser;
+  }
+
+  function cardHeader(cfg) {
+    const c = cfg || {};
+    const color = c.color || "#2563eb";
+    return (
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">' +
+      '<div style="display:flex;align-items:center;gap:12px;min-width:0">' +
+      '<div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;' +
+      "background:linear-gradient(145deg," + color + " 0%," + color + 'cc 100%);box-shadow:0 6px 14px ' + color + '55">' +
+      App.icon(c.icon, { size: 18 }) + "</div>" +
+      '<div style="min-width:0"><div style="' + LABEL + '">' + H(c.title) + "</div>" +
+      (c.hint ? '<div data-role="hint" style="' + HINT + '">' + H(c.hint) + "</div>" : "") +
+      "</div></div>" +
+      '<div data-role="header-right" style="display:flex;align-items:center;gap:8px;flex-shrink:0"></div>' +
+      "</div>"
+    );
+  }
+
+  /* ── Layout skeleton ────────────────────────────────────────────────────── */
+  root.innerHTML =
+    '<div id="profile-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;min-width:0">' +
+    '<section id="card-account" style="' + CARD + '"></section>' +
+    '<section id="card-password" style="' + CARD + '"></section>' +
+    "</div>" +
+    '<section id="card-sessions" style="' + CARD + '"></section>';
+
+  const accountCard = App.qs("#card-account", root);
+  const passwordCard = App.qs("#card-password", root);
+  const sessionsCard = App.qs("#card-sessions", root);
+
+  /* ── 1. Account card ────────────────────────────────────────────────────── */
+  function renderAccountLoading() {
+    accountCard.innerHTML =
+      cardHeader({ icon: "AiOutlineIdcard", color: "#2563eb", title: "Account", hint: "Who you are on this platform." }) +
+      '<div style="display:flex;align-items:center;gap:16px;margin-bottom:18px">' +
+      '<div style="width:64px;height:64px;border-radius:50%;background:rgba(148,163,184,.25);flex-shrink:0;animation:shimmer 1.4s ease infinite"></div>' +
+      '<div style="flex:1;min-width:0">' + App.skeleton(2) + "</div></div>" + App.skeleton(4);
+  }
+
+  function renderAccount(me, features) {
+    const name = me.full_name || me.email || "System Admin";
+    const role = me.role_name || (me.assigned_role && me.assigned_role.name) || profile.role_name || "Administrator";
+    const active = me.is_active !== false;
+    const perms = Array.isArray(me.permissions) ? me.permissions : [];
+
+    const byKey = {};
+    (features || []).forEach((f) => { if (f && f.key) byKey[f.key] = f; });
+    const orderOf = (k) => {
+      const f = byKey[k];
+      if (f && f.order != null) return Number(f.order);
+      const m = App.FEATURE_META[k];
+      return m ? m.order : 99;
+    };
+    const labelOf = (k) => {
+      const f = byKey[k];
+      if (f && f.name) return f.name;
+      const m = App.FEATURE_META[k];
+      return m ? m.label : k;
+    };
+    const orderedPerms = perms.slice().sort((a, b) => orderOf(a) - orderOf(b) || String(a).localeCompare(String(b)));
+    const totalModules = Math.max(Object.keys(byKey).length, Object.keys(App.FEATURE_META).length);
+
+    const detail = (k, v) =>
+      '<div style="min-width:0"><div style="' + KEY + '">' + H(k) + '</div><div style="' + VALUE + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + v + "</div></div>";
+
+    accountCard.innerHTML =
+      cardHeader({ icon: "AiOutlineIdcard", color: "#2563eb", title: "Account", hint: "Who you are on this platform." }) +
+      // Identity row — same avatar treatment as the header chip, scaled to 64px.
+      '<div style="display:flex;align-items:center;gap:16px;min-width:0">' +
+      '<div style="width:64px;height:64px;border-radius:50%;flex-shrink:0;background:linear-gradient(135deg,#2563eb,#0891b2);color:#fff;font-size:24px;font-weight:600;' +
+      'display:flex;align-items:center;justify-content:center;box-shadow:0 4px 6px -1px rgba(0,0,0,.1)">' + H(String(name).trim().charAt(0).toUpperCase() || "?") + "</div>" +
+      '<div style="min-width:0;flex:1">' +
+      '<div style="font-size:18px;font-weight:600;color:#0f172a;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + H(name) + "</div>" +
+      '<div style="font-size:13.5px;color:#64748b;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px">' +
+      App.icon("AiOutlineMail", { size: 13, color: "#94a3b8" }) + "<span>" + H(me.email || "—") + "</span></div>" +
+      '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px">' +
+      App.pill(role, "blue") +
+      App.pill(active ? "Active" : "Inactive", active ? "emerald" : "slate", { dot: true }) +
+      "</div></div></div>" +
+      // Details grid.
+      '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;margin-top:18px;padding-top:16px;border-top:1px solid rgba(226,232,240,.8)">' +
+      detail("Member since", H(App.fmt.date(me.created_at))) +
+      detail("Last updated", H(App.fmt.date(me.updated_at))) +
+      detail("Role description", H((me.assigned_role && me.assigned_role.description) || "—")) +
+      detail("User ID", '<span style="font-family:' + MONO + ';font-size:12px" title="' + H(me.id || "") + '">' + H(me.id ? String(me.id).slice(0, 8) + "…" : "—") + "</span>") +
+      "</div>" +
+      // Permissions.
+      '<div style="margin-top:18px;padding-top:16px;border-top:1px solid rgba(226,232,240,.8)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">' +
+      '<div style="' + LABEL + '">Permissions</div>' +
+      '<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b">' +
+      orderedPerms.length + " of " + totalModules + " modules</span></div>" +
+      (orderedPerms.length
+        ? '<div style="display:flex;flex-wrap:wrap;gap:4px">' + orderedPerms.map((k) => App.permChip(labelOf(k))).join("") + "</div>"
+        : '<span style="font-size:12px;color:#94a3b8">No modules assigned.</span>') +
+      "</div>";
+  }
+
+  /* ── 2. Change password card ────────────────────────────────────────────── */
+  function passwordField(cfg) {
+    const c = cfg || {};
+    const wrap = App.el(
+      '<div style="display:flex;flex-direction:column;gap:6px;min-width:0">' +
+        '<label for="' + H(c.id) + '" style="' + LABEL + '">' + H(c.label) + "</label>" +
+        '<div data-role="field" data-hover="fieldfocus" style="position:relative;display:flex;align-items:center;box-sizing:border-box;height:36px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;transition:border-color .15s, box-shadow .15s">' +
+        '<input id="' + H(c.id) + '" type="password" autocomplete="' + H(c.autocomplete || "off") + '" placeholder="' + H(c.placeholder || "") + '" ' +
+        'style="flex:1;min-width:0;height:34px;border:0;outline:none;background:transparent;padding:0 0 0 11px;font-size:14px;font-family:inherit;color:#0f172a;box-shadow:none;border-radius:8px">' +
+        '<button type="button" tabindex="-1" aria-label="Show password" data-role="eye" data-hover="close" style="width:34px;height:34px;border:0;background:none;padding:0;cursor:pointer;color:#94a3b8;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:color .15s">' +
+        App.icon("AiOutlineEyeInvisible", { size: 15 }) + "</button></div>" +
+        (c.help ? '<div data-role="help" style="font-size:12px;color:#64748b">' + H(c.help) + "</div>" : "") +
+        '<div data-role="error" role="alert" style="display:none;font-size:12px;color:#e11d48"></div>' +
+        "</div>",
+    );
+    const input = wrap.querySelector("input");
+    const field = wrap.querySelector('[data-role="field"]');
+    const eye = wrap.querySelector('[data-role="eye"]');
+    const error = wrap.querySelector('[data-role="error"]');
+    const help = wrap.querySelector('[data-role="help"]');
+    let visible = false;
+    eye.addEventListener("click", () => {
+      visible = !visible;
+      input.type = visible ? "text" : "password";
+      eye.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+      eye.innerHTML = App.icon(visible ? "AiOutlineEye" : "AiOutlineEyeInvisible", { size: 15 });
+      input.focus();
+    });
+    wrap.input = input;
+    wrap.setError = (msg) => {
+      if (msg) {
+        error.textContent = msg;
+        error.style.display = "block";
+        if (help) help.style.display = "none";
+        field.style.borderColor = "#f43f5e";
+        field.style.boxShadow = "0 0 0 2px rgba(244,63,94,.12)";
+      } else {
+        error.textContent = "";
+        error.style.display = "none";
+        if (help) help.style.display = "block";
+        field.style.borderColor = "#cbd5e1";
+        field.style.boxShadow = "";
+      }
+    };
+    input.addEventListener("input", () => wrap.setError(""));
+    return wrap;
+  }
+
+  function renderPasswordCard() {
+    passwordCard.innerHTML = cardHeader({
+      icon: "AiOutlineLock", color: "#d97706", title: "Change password", hint: "Choose a strong password you do not use elsewhere.",
+    });
+
+    const form = App.el('<form autocomplete="off" novalidate style="display:flex;flex-direction:column;gap:14px"></form>');
+    const current = passwordField({ id: "pw-current", label: "Current password", placeholder: "Enter your current password", autocomplete: "current-password" });
+    const next = passwordField({ id: "pw-new", label: "New password", placeholder: "At least 8 characters", autocomplete: "new-password", help: "Use 8–128 characters. A mix of letters, numbers and symbols is best." });
+    const confirm = passwordField({ id: "pw-confirm", label: "Confirm password", placeholder: "Re-enter the new password", autocomplete: "new-password" });
+    // Hidden username field so password managers associate the new credential with the account.
+    const userField = App.el('<input type="text" name="username" autocomplete="username" tabindex="-1" aria-hidden="true" style="position:absolute;opacity:0;height:0;width:0;border:0;padding:0;margin:0;pointer-events:none">');
+    userField.value = profile.email || "";
+
+    const footer = App.el('<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:2px"></div>');
+    const submitBtn = App.el('<button type="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '">' + App.icon("AiOutlineKey", { size: 14 }) + "<span>Update password</span></button>");
+    footer.appendChild(submitBtn);
+
+    form.appendChild(userField);
+    form.appendChild(current);
+    form.appendChild(next);
+    form.appendChild(confirm);
+    form.appendChild(footer);
+    passwordCard.appendChild(form);
+
+    const validate = () => {
+      let ok = true;
+      const cur = current.input.value;
+      const nw = next.input.value;
+      const cf = confirm.input.value;
+      current.setError("");
+      next.setError("");
+      confirm.setError("");
+      if (!cur) { current.setError("Enter your current password."); ok = false; }
+      if (!nw) { next.setError("Enter a new password."); ok = false; }
+      else if (nw.length < 8) { next.setError("Use at least 8 characters."); ok = false; }
+      else if (nw.length > 128) { next.setError("Use at most 128 characters."); ok = false; }
+      else if (cur && nw === cur) { next.setError("The new password must differ from the current one."); ok = false; }
+      if (!cf) { confirm.setError("Confirm the new password."); ok = false; }
+      else if (nw && cf !== nw) { confirm.setError("Passwords do not match."); ok = false; }
+      return ok;
+    };
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (submitBtn.disabled) return;
+      if (!validate()) {
+        App.toast.warning("Please fix the highlighted fields.");
+        const firstBad = [current, next, confirm].find((f) => f.querySelector('[data-role="error"]').style.display !== "none");
+        if (firstBad) firstBad.input.focus();
+        return;
+      }
+      App.setLoading(submitBtn, true);
+      try {
+        await App.api("/auth/change-password", {
+          method: "POST",
+          body: { current_password: current.input.value, new_password: next.input.value },
+        });
+        App.toast.success("Password updated.");
+        form.reset();
+        current.setError(""); next.setError(""); confirm.setError("");
+      } catch (err) {
+        if (err && err.status === 400 && /current password/i.test(err.message || "")) {
+          current.setError(err.message);
+          current.input.focus();
+        }
+        App.toast.error(err.message || "Unable to update password.");
+      } finally {
+        App.setLoading(submitBtn, false);
+      }
+    });
+  }
+
+  /* ── 3. Active sessions card ────────────────────────────────────────────── */
+  let sessions = [];
+  let sessionsLoading = true;
+  let sessionsLoaded = false;
+  let sessionsTableEl = null;
+  let sessionsCountEl = null;
+  let sessionsHintEl = null;
+
+  function renderSessionsTable() {
+    if (!sessionsTableEl) return;
+    const rows = sessions.slice().sort((a, b) => {
+      if (!!a.is_current !== !!b.is_current) return a.is_current ? -1 : 1;
+      return new Date(normIso(b.last_used_at) || 0) - new Date(normIso(a.last_used_at) || 0);
+    });
+    App.table(sessionsTableEl, {
+      columns: [
+        {
+          title: "#", key: "index", width: 60, align: "center",
+          render: (_r, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + (i + 1) + "</span>",
+        },
+        {
+          title: "Device", key: "user_agent",
+          render: (s) =>
+            '<div style="display:flex;align-items:center;gap:10px;min-width:0;padding:2px 0">' +
+            '<div style="width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:' +
+            (s.is_current ? "#ecfdf5;color:#059669" : "#f1f5f9;color:#475569") + '">' + App.icon("AiOutlineDesktop", { size: 15 }) + "</div>" +
+            '<div style="min-width:0"><span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + H(uaShort(s.user_agent)) + "</span>" +
+            '<span title="' + H(s.user_agent || "") + '" style="display:block;font-size:12px;color:#64748b;margin-top:2px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + H(s.user_agent || "Unknown device") + "</span></div></div>",
+        },
+        {
+          title: "IP address", key: "ip_address", width: 160,
+          render: (s) => '<span style="' + MONO_BADGE + '">' + H(s.ip_address || "Unknown IP") + "</span>",
+        },
+        {
+          title: "Signed in", key: "created_at", width: 190,
+          render: (s) => '<span style="font-size:13px;color:#334155;white-space:nowrap">' + H(App.fmt.dateTime(normIso(s.created_at))) + "</span>",
+        },
+        {
+          title: "Last active", key: "last_used_at", width: 150,
+          render: (s) =>
+            '<span data-tip="' + H(App.fmt.dateTime(normIso(s.last_used_at))) + '" style="font-size:13px;color:#334155;white-space:nowrap;cursor:default">' +
+            H(App.fmt.relative(normIso(s.last_used_at))) + "</span>",
+        },
+        {
+          title: "Status", key: "is_current", width: 130,
+          render: (s) => (s.is_current ? App.pill("Current", "emerald", { dot: true }) : App.pill("Signed in", "slate", { dot: true })),
+        },
+      ],
+      rows,
+      rowKey: "session_id",
+      loading: sessionsLoading,
+      minWidth: 820,
+      emptyText: sessionsLoaded ? "No active sessions." : "Loading sessions…",
+      rowStyle: (s) => (s.is_current ? "background:rgba(236,253,245,.35);" : ""),
+      pagination: false,
+    });
+    if (sessionsCountEl) sessionsCountEl.textContent = sessions.length + " active";
+    if (sessionsHintEl) {
+      sessionsHintEl.textContent = sessions.length
+        ? "Devices currently signed in to your account. Sign out everywhere if something looks unfamiliar."
+        : "Devices currently signed in to your account.";
+    }
+  }
+
+  async function loadSessions() {
+    sessionsLoading = true;
+    renderSessionsTable();
+    try {
+      const data = await App.api("/auth/sessions");
+      sessions = Array.isArray(data) ? data : (data && Array.isArray(data.items) ? data.items : []);
+      sessionsLoaded = true;
+    } catch (err) {
+      sessions = [];
+      App.toast.error(err.message || "Unable to load sessions.");
+    } finally {
+      sessionsLoading = false;
+      renderSessionsTable();
+    }
+  }
+
+  function renderSessionsCard() {
+    sessionsCard.innerHTML = cardHeader({
+      icon: "AiOutlineDesktop", color: "#0d9488", title: "Active sessions", hint: "Devices currently signed in to your account.",
+    });
+    sessionsHintEl = sessionsCard.querySelector('[data-role="hint"]');
+    const right = sessionsCard.querySelector('[data-role="header-right"]');
+
+    sessionsCountEl = App.el('<span style="' + MONO_BADGE + '">—</span>');
+    const refreshBtn = App.el('<button type="button" data-hover="btn-text" data-tip="Refresh sessions" aria-label="Refresh sessions" style="' + BTN_ICON + '">' + App.icon("AiOutlineReload", { size: 15 }) + "</button>");
+    const logoutAllBtn = App.el('<button type="button" data-hover="btn-danger-outline" style="' + BTN_DANGER_OUTLINE + '">' + App.icon("AiOutlineLogout", { size: 14 }) + "<span>Log out of all devices</span></button>");
+    right.appendChild(sessionsCountEl);
+    right.appendChild(refreshBtn);
+    right.appendChild(logoutAllBtn);
+
+    sessionsTableEl = App.el('<div></div>');
+    sessionsCard.appendChild(sessionsTableEl);
+
+    refreshBtn.addEventListener("click", async () => {
+      if (refreshBtn.disabled) return;
+      App.setDisabled(refreshBtn, true);
+      try { await loadSessions(); } finally { App.setDisabled(refreshBtn, false); }
+    });
+
+    logoutAllBtn.addEventListener("click", async () => {
+      if (logoutAllBtn.disabled) return;
+      const ok = await App.confirm({
+        title: "Log out of all devices?",
+        content: "Every active session — including this one — will be revoked immediately. You will need to sign in again.",
+        okText: "Log out everywhere",
+        cancelText: "Cancel",
+        danger: true,
+      });
+      if (!ok) return;
+      App.setLoading(logoutAllBtn, true);
+      try {
+        await App.api("/auth/logout-all", { method: "POST" });
+        App.toast.success("Signed out of all devices.");
+        await App.logout();
+      } catch (err) {
+        App.toast.error(err.message || "Unable to sign out of all devices.");
+        App.setLoading(logoutAllBtn, false);
+      }
+    });
+  }
+
+  /* ── Boot ───────────────────────────────────────────────────────────────── */
+  renderAccountLoading();
+  renderPasswordCard();
+  renderSessionsCard();
+
+  const accountLoad = (async () => {
+    let me = null;
+    let features = [];
+    try {
+      const results = await Promise.all([
+        App.api("/auth/me"),
+        App.api("/features/").catch(() => []),
+      ]);
+      me = results[0] || {};
+      features = Array.isArray(results[1]) ? results[1] : [];
+      // Keep the stored profile (header chip, sidebar) in sync with the server copy.
+      try { App.setProfile(App.hydrateProfile(me)); } catch (e) { /* storage unavailable */ }
+    } catch (err) {
+      App.toast.error(err.message || "Unable to load your account.");
+      me = profile || {};
+    }
+    renderAccount(me, features);
+  })();
+
+  await Promise.all([accountLoad, loadSessions()]);
+})();
+</script>
+</body>
+</html>

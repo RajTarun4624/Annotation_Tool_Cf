@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Prompt Attack Annotation</title>
+  <link rel="icon" href="public/favi.png">
+</head>
+<body style="margin:0;min-width:320px;min-height:100vh;color:#0f172a;font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;background:radial-gradient(circle at top left, rgba(37,99,235,0.08) 0%, transparent 42%), radial-gradient(circle at bottom right, rgba(13,148,136,0.06) 0%, transparent 40%), linear-gradient(180deg, #fbfdff 0%, #eef3fb 100%);">
+
+  <main style="position:relative;display:flex;min-height:100vh;align-items:center;justify-content:center;overflow:hidden;padding:40px 16px;">
+    <!-- Saturated colour blobs directly behind the card so the frosted blur reads -->
+    <div aria-hidden="true" style="pointer-events:none;position:absolute;left:-96px;top:25%;width:420px;height:420px;border-radius:9999px;background:radial-gradient(circle, rgba(37,99,235,0.4), transparent 65%);filter:blur(64px);"></div>
+    <div aria-hidden="true" style="pointer-events:none;position:absolute;right:-96px;bottom:25%;width:420px;height:420px;border-radius:9999px;background:radial-gradient(circle, rgba(13,148,136,0.38), transparent 65%);filter:blur(64px);"></div>
+    <div aria-hidden="true" style="pointer-events:none;position:absolute;left:50%;top:0;width:520px;height:320px;border-radius:9999px;transform:translateX(-50%);background:radial-gradient(circle, rgba(139,92,246,0.25), transparent 65%);filter:blur(64px);"></div>
+
+    <div style="width:100%;max-width:440px;position:relative;">
+      <div style="box-sizing:border-box;width:100%;border-radius:32px;padding:24px;background:linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(238,243,255,0.55) 100%);backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);border:1px solid rgba(255,255,255,0.7);box-shadow:0 20px 60px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.6);">
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;margin-bottom:32px;">
+          <img src="public/han-logo.png" alt="Han Digital" draggable="false" style="height:48px;width:auto;user-select:none;display:block;">
+          <p style="margin:16px 0 0;color:#64748b;font-size:15px;">Sign in with your email and password.</p>
+        </div>
+
+        <form id="login-form" autocomplete="off" novalidate style="display:flex;flex-direction:column;gap:20px;">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label for="email" style="font-size:14px;font-weight:500;color:#334155;">Email ID</label>
+            <input id="email" name="email" type="email" placeholder="name@example.com" autocomplete="off" spellcheck="false"
+                   data-hover="fieldfocus"
+                   style="display:block;box-sizing:border-box;outline:none;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid rgba(255,255,255,0.7);background:rgba(255,255,255,0.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#0f172a;font-size:15px;font-family:inherit;transition:border-color .15s, box-shadow .15s;">
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label for="password" style="font-size:14px;font-weight:500;color:#334155;">Password</label>
+            <div data-hover="fieldfocus"
+                 style="display:flex;box-sizing:border-box;align-items:center;gap:6px;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid rgba(255,255,255,0.7);background:rgba(255,255,255,0.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);transition:border-color .15s, box-shadow .15s;">
+              <input id="password" name="password" type="password" placeholder="Enter your password" autocomplete="new-password"
+                     style="flex:1;min-width:0;height:38px;border:0;outline:none;background:transparent;padding:0;color:#0f172a;font-size:15px;font-family:inherit;box-shadow:none;">
+              <button id="toggle-password" type="button" aria-label="Show password" tabindex="-1"
+                      style="display:inline-flex;align-items:center;border:0;background:none;padding:0;cursor:pointer;color:#94a3b8;font-size:14px;line-height:0;flex-shrink:0;"></button>
+            </div>
+          </div>
+
+          <p id="login-error" role="alert" style="display:none;margin:0;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;padding:12px 16px;font-size:14px;color:#b91c1c;line-height:1.45;"></p>
+
+          <button id="login-btn" type="submit"
+                  style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:40px;width:100%;border-radius:12px;border:none;background:linear-gradient(135deg,#1d4ed8,#0f766e);font-weight:600;font-size:14px;font-family:inherit;color:#fff;box-shadow:0 8px 24px rgba(29,78,216,0.35);cursor:pointer;transition:opacity .15s;">
+            Login
+          </button>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+  <script>
+    (function () {
+      // Block the browser "back" button on the login screen (mirrors the React page).
+      window.history.pushState(null, "", window.location.href);
+      window.addEventListener("popstate", function () {
+        window.history.pushState(null, "", window.location.href);
+      });
+
+      var form = document.getElementById("login-form");
+      var emailInput = document.getElementById("email");
+      var passwordInput = document.getElementById("password");
+      var toggleBtn = document.getElementById("toggle-password");
+      var errorBox = document.getElementById("login-error");
+      var loginBtn = document.getElementById("login-btn");
+      var busy = false;
+
+      // Eye toggle for the password field.
+      function paintEye() {
+        var visible = passwordInput.type === "text";
+        toggleBtn.innerHTML = App.icon(visible ? "AiOutlineEye" : "AiOutlineEyeInvisible", { size: 14 });
+        toggleBtn.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+      }
+      toggleBtn.addEventListener("click", function () {
+        passwordInput.type = passwordInput.type === "password" ? "text" : "password";
+        paintEye();
+        passwordInput.focus();
+      });
+      paintEye();
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.style.display = msg ? "block" : "none";
+      }
+
+      function landingPage(profile) {
+        return App.firstFeaturePage((profile && profile.permissions) || []);
+      }
+
+      // Silent restore: a valid refresh cookie skips the form entirely.
+      App.tryRestoreSession().then(function (profile) {
+        if (profile && !busy) window.location.replace(landingPage(profile));
+      });
+
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        if (busy) return;
+        var email = emailInput.value.trim().toLowerCase();
+        var password = passwordInput.value;
+        if (!email || !password) {
+          showError("Please enter email and password.");
+          return;
+        }
+        busy = true;
+        showError("");
+        App.setLoading(loginBtn, true);
+        try {
+          var auth = await App.api("/auth/login", { method: "POST", auth: false, body: { email: email, password: password } });
+          var token = auth && auth.access_token;
+          if (!token) throw new Error("Login succeeded but token was not returned.");
+          sessionStorage.setItem("pa_token", token);
+
+          var me = await App.api("/auth/me", { redirectOnAuthFail: false });
+          var profile = App.hydrateProfile(me, auth);
+          App.setProfile(profile);
+          try { localStorage.setItem("loginType", profile.role_name || "Administrator"); } catch (e) { /* ignore */ }
+
+          App.toast.success("Welcome back.");
+          setTimeout(function () { window.location.replace(landingPage(profile)); }, 350);
+        } catch (err) {
+          busy = false;
+          App.setLoading(loginBtn, false);
+          showError((err && err.message) || "Unable to sign in.");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

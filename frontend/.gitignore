@@ -1,0 +1,9 @@
+# Logs
+logs
+*.log
+
+# OS files
+.DS_Store
+
+# Machine-local files
+*.local

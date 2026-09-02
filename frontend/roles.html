@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roles · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Feature card hover (unchecked only) — cannot be expressed inline. */
+  [data-fcard]:not([data-checked]):hover{border-color:#bfdbfe!important;background:#f8fafc!important}
+  @media (max-width:640px){[data-roles-strip]{flex-direction:column;align-items:stretch!important}[data-roles-strip] [data-search]{max-width:none!important}}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  App.requirePermission("roles");
+  const root = App.renderShell({ page: "roles", title: "Roles", subtitle: "Manage permissions and module access." });
+
+  const esc = App.escapeHtml;
+  const MONO = App.tokens.MONO;
+  const INPUT = App.tokens.INPUT_STYLE;
+
+  const FEATURE_COLORS = {
+    dashboard: "#2563eb",
+    projects: "#0d9488",
+    queues: "#7c3aed",
+    tasks: "#4f46e5",
+    roles: "#dc2626",
+    users: "#b45309",
+    annotation_queues: "#0891b2",
+    profile: "#64748b",
+  };
+
+  /* ── State ─────────────────────────────────────────────────────────────── */
+  const state = {
+    roles: [],
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    searchInput: "",
+    searchTerm: "",
+    features: [],
+    loading: true,
+  };
+
+  /* ── Layout: header strip + table panel ────────────────────────────────── */
+  const strip = App.el(
+    '<div data-roles-strip style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px;flex-wrap:wrap"></div>',
+  );
+  const searchWrap = App.el('<div data-search style="width:100%;max-width:384px;min-width:0"></div>');
+  const search = App.searchBox({
+    placeholder: "Search roles by name or description...",
+    value: "",
+    onInput: (v) => {
+      state.searchInput = v;
+      applySearch();
+    },
+  });
+  searchWrap.appendChild(search);
+
+  const createBtn = App.el(
+    '<button type="button" data-hover="btn-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 16px;' +
+      'border-radius:4px;border:0;background:#1d4ed8;color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;' +
+      'box-shadow:0 1px 2px rgba(0,0,0,.05);transition:.15s;flex-shrink:0">' +
+      App.icon("AiOutlinePlus", { size: 14 }) + "<span>Create Role</span></button>",
+  );
+  strip.appendChild(searchWrap);
+  strip.appendChild(createBtn);
+
+  const panel = App.el('<div style="' + App.tokens.GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
+  const tableBox = App.el("<div></div>");
+  panel.appendChild(tableBox);
+
+  root.appendChild(strip);
+  root.appendChild(panel);
+
+  // Debounced search → backend (300 ms), resets to page 1.
+  const applySearch = App.debounce(() => {
+    const next = state.searchInput.trim();
+    if (next === state.searchTerm && state.page === 1) return;
+    state.searchTerm = next;
+    state.page = 1;
+    loadData();
+  }, 300);
+
+  /* ── Data ──────────────────────────────────────────────────────────────── */
+  function listQuery(opts) {
+    const params = new URLSearchParams();
+    if (opts.search) params.set("search", opts.search);
+    if (opts.page) params.set("page", String(opts.page));
+    if (opts.pageSize) params.set("page_size", String(opts.pageSize));
+    const q = params.toString();
+    return q ? "?" + q : "";
+  }
+
+  async function loadData() {
+    state.loading = true;
+    renderTable();
+    try {
+      const [rolesResp, featuresResp] = await Promise.all([
+        App.api("/roles/" + listQuery({ page: state.page, pageSize: state.pageSize, search: state.searchTerm })),
+        App.api("/features/"),
+      ]);
+      const items = Array.isArray(rolesResp) ? rolesResp : (rolesResp && rolesResp.items) || [];
+      const total = Array.isArray(rolesResp) ? rolesResp.length : rolesResp && rolesResp.total != null ? rolesResp.total : items.length;
+      state.roles = items;
+      state.total = total;
+      // Only offer features the frontend ships (the 8 known keys), sorted by order.
+      state.features = (featuresResp || [])
+        .filter((f) => f && !!App.FEATURE_META[f.key])
+        .sort((a, b) => (a.order == null ? 99 : a.order) - (b.order == null ? 99 : b.order));
+    } catch (err) {
+      App.toast.error(err.message || "Unable to load roles.");
+    } finally {
+      state.loading = false;
+      renderTable();
+    }
+  }
+
+  /* ── Table ─────────────────────────────────────────────────────────────── */
+  function renderTable() {
+    App.table(tableBox, {
+      rowKey: "id",
+      loading: state.loading,
+      rows: state.roles,
+      emptyText: "No data",
+      columns: [
+        {
+          title: "#",
+          key: "index",
+          width: 60,
+          align: "center",
+          render: (_, i) =>
+            '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' +
+            ((state.page - 1) * state.pageSize + i + 1) + "</span>",
+        },
+        {
+          title: "Role",
+          key: "name",
+          render: (r) =>
+            '<div style="padding:2px 0;min-width:0">' +
+            '<span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>" +
+            '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(r.description || "No description provided.") + "</span></div>",
+        },
+        {
+          title: "Permissions",
+          key: "permissions",
+          render: (r) => {
+            const items = r.permissions || [];
+            if (!items.length) return '<span style="font-size:12px;color:#94a3b8">None</span>';
+            return '<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:420px">' + items.map((p) => App.permChip(p)).join("") + "</div>";
+          },
+        },
+        {
+          title: "Modules",
+          key: "perm_count",
+          width: 100,
+          align: "center",
+          render: (r) =>
+            '<span style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO +
+            ';font-weight:700;font-size:12px;background:#f1f5f9;color:#334155;padding:2px 10px;border-radius:4px">' +
+            (r.permissions || []).length + "</span>",
+        },
+        {
+          title: "Status",
+          key: "is_active",
+          width: 130,
+          render: (r) => {
+            const wrap = App.el('<div style="display:flex;align-items:center;gap:8px"></div>');
+            wrap.insertAdjacentHTML("afterbegin", r.is_active ? App.pill("Active", "emerald", { dot: true }) : App.pill("Inactive", "slate", { dot: true }));
+            const sw = App.switchEl({
+              checked: !!r.is_active,
+              small: true,
+              onChange: async () => {
+                await handleToggleStatus(r);
+                return false; // the reload repaints the real state
+              },
+            });
+            wrap.appendChild(sw);
+            return wrap;
+          },
+        },
+        {
+          title: "Actions",
+          key: "actions",
+          width: 80,
+          align: "center",
+          render: (r) => {
+            const btn = App.el(
+              '<button type="button" data-hover="btn-text" data-tip="Edit role" aria-label="Edit role" style="display:inline-flex;align-items:center;justify-content:center;' +
+                'height:32px;width:32px;padding:0;border-radius:4px;border:0;background:transparent;color:#000;cursor:pointer;transition:.15s">' +
+                App.icon("AiOutlineEdit", { size: 14 }) + "</button>",
+            );
+            btn.addEventListener("click", () => openEdit(r));
+            return btn;
+          },
+        },
+      ],
+      pagination: {
+        page: state.page,
+        pageSize: state.pageSize,
+        total: state.total,
+        showSizeChanger: true,
+        pageSizeOptions: [10, 25, 50, 100],
+        onChange: (nextPage, nextSize) => {
+          state.page = nextPage;
+          if (nextSize !== state.pageSize) state.pageSize = nextSize;
+          loadData();
+        },
+      },
+    });
+  }
+
+  /* ── Status toggle (with confirm) ──────────────────────────────────────── */
+  async function handleToggleStatus(role) {
+    const verb = role.is_active ? "Deactivate" : "Activate";
+    const ok = await App.confirm({
+      title: verb + " role",
+      content: "Do you want to " + verb.toLowerCase() + " " + role.name + "?",
+      okText: "Confirm",
+    });
+    if (!ok) return;
+    try {
+      await App.api("/roles/" + encodeURIComponent(role.id) + "/status", { method: "PATCH", body: { is_active: !role.is_active } });
+      App.toast.success("Role status updated.");
+      loadData();
+    } catch (err) {
+      App.toast.error(err.message || "Unable to update role status.");
+    }
+  }
+
+  /* ── Create / Edit modal ───────────────────────────────────────────────── */
+  const LABEL = (text) =>
+    '<span style="display:block;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155">' + esc(text) + "</span>";
+
+  function openCreate() { openModal(null); }
+  function openEdit(role) { openModal(role); }
+
+  function openModal(editingRole) {
+    const isEdit = !!editingRole;
+    let selected = isEdit ? (editingRole.permissions || []).filter((k) => state.features.some((f) => f.key === k)) : [];
+    let submitting = false;
+
+    // Body markup
+    const body = App.el(
+      '<div style="font-family:inherit;color:#0f172a">' +
+        // Basics
+        '<div style="margin-bottom:16px">' +
+        '<div style="margin-bottom:8px">' + LABEL("Basics") + "</div>" +
+        '<div style="margin-bottom:8px">' +
+        '<label style="display:block;margin-bottom:6px">' + LABEL("Role Name") + "</label>" +
+        '<input data-field="name" type="text" data-hover="fieldfocus" placeholder="e.g. Operations Manager" maxlength="80" style="' + INPUT + '">' +
+        '<div data-error="name" style="display:none;font-size:12.5px;color:#ff4d4f;margin-top:4px;line-height:1.4"></div>' +
+        "</div>" +
+        '<div style="margin-bottom:0">' +
+        '<label style="display:block;margin-bottom:6px">' + LABEL("Description") + "</label>" +
+        '<textarea data-field="description" rows="2" data-hover="fieldfocus" placeholder="Describe what this role can manage..." maxlength="240" style="' + INPUT +
+        'height:auto;min-height:58px;padding:6px 11px;resize:vertical;line-height:1.5"></textarea>' +
+        "</div></div>" +
+        // Modules
+        '<div style="margin-bottom:16px">' +
+        '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        "<span>" + LABEL("Enabled Modules") + "</span>" +
+        '<div data-role="modules-right" style="display:flex;align-items:center;gap:8px">' +
+        '<span data-role="count" style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b"></span>' +
+        "</div></div>" +
+        '<div data-role="modules-hint" style="display:none;font-size:11px;color:#e11d48;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Select at least one module</div>' +
+        '<div data-role="grid" style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:8px"></div>' +
+        "</div>" +
+        // Status
+        "<div>" +
+        '<div style="margin-bottom:8px">' + LABEL("Status") + "</div>" +
+        '<div data-role="status-box" style="display:flex;align-items:center;gap:12px;border-radius:8px;border:1px solid #e2e8f0;background:rgba(248,250,252,.5);padding:8px 12px">' +
+        '<span style="font-size:12px;color:#334155">Active roles can be assigned to users.</span>' +
+        "</div></div>" +
+        "</div>",
+    );
+
+    const nameInput = body.querySelector('[data-field="name"]');
+    const nameError = body.querySelector('[data-error="name"]');
+    const descInput = body.querySelector('[data-field="description"]');
+    const grid = body.querySelector('[data-role="grid"]');
+    const countEl = body.querySelector('[data-role="count"]');
+    const hintEl = body.querySelector('[data-role="modules-hint"]');
+    const modulesRight = body.querySelector('[data-role="modules-right"]');
+    const statusBox = body.querySelector('[data-role="status-box"]');
+
+    if (isEdit) {
+      nameInput.value = editingRole.name || "";
+      descInput.value = editingRole.description || "";
+    }
+
+    // Status switch (default checked on create)
+    const activeSwitch = App.switchEl({ checked: isEdit ? !!editingRole.is_active : true });
+    statusBox.insertBefore(activeSwitch, statusBox.firstChild);
+
+    // "All" checkbox (select-all with indeterminate)
+    const allCb = App.checkbox({
+      checked: false,
+      label: '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#334155">All</span>',
+      labelIsHtml: true,
+      onChange: (checked) => {
+        selected = checked ? state.features.map((f) => f.key) : [];
+        paintCards();
+        syncHeader();
+      },
+    });
+    modulesRight.appendChild(allCb);
+
+    const cardEls = new Map();
+
+    function cardHtml(feature, checked) {
+      const meta = App.FEATURE_META[feature.key] || {};
+      const color = FEATURE_COLORS[feature.key] || "#2563eb";
+      return (
+        '<label data-fcard' + (checked ? " data-checked" : "") + ' style="display:flex;align-items:center;gap:10px;border-radius:8px;border:1px solid ' +
+        (checked ? "#93c5fd" : "#e2e8f0") + ";background:" + (checked ? "rgba(239,246,255,.6)" : "#fff") +
+        ';padding:8px;cursor:pointer;transition:all .15s;box-sizing:border-box;min-width:0;user-select:none">' +
+        '<div style="display:flex;height:28px;width:28px;flex-shrink:0;align-items:center;justify-content:center;border-radius:6px;background:' + color + '18">' +
+        (meta.icon ? App.icon(meta.icon, { size: 13, color }) : "") + "</div>" +
+        '<div style="flex:1;min-width:0">' +
+        '<span style="display:block;font-size:12px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        esc(feature.name || feature.label || feature.key) + "</span>" +
+        '<span style="display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        esc(feature.key) + "</span></div>" +
+        '<input type="checkbox" style="width:16px;height:16px;accent-color:#1d4ed8;cursor:pointer;margin:0;flex-shrink:0"' + (checked ? " checked" : "") + ">" +
+        "</label>"
+      );
+    }
+
+    function buildCards() {
+      grid.innerHTML = "";
+      cardEls.clear();
+      state.features.forEach((feature) => {
+        const card = App.el(cardHtml(feature, selected.includes(feature.key)));
+        const input = card.querySelector("input");
+        input.addEventListener("change", () => {
+          const checked = input.checked;
+          selected = checked ? selected.concat(selected.includes(feature.key) ? [] : [feature.key]) : selected.filter((p) => p !== feature.key);
+          paintCard(card, checked);
+          syncHeader();
+        });
+        cardEls.set(feature.key, card);
+        grid.appendChild(card);
+      });
+    }
+
+    function paintCard(card, checked) {
+      if (checked) card.setAttribute("data-checked", ""); else card.removeAttribute("data-checked");
+      card.style.borderColor = checked ? "#93c5fd" : "#e2e8f0";
+      card.style.background = checked ? "rgba(239,246,255,.6)" : "#fff";
+      const input = card.querySelector("input");
+      if (input.checked !== checked) input.checked = checked;
+    }
+
+    function paintCards() {
+      cardEls.forEach((card, key) => paintCard(card, selected.includes(key)));
+    }
+
+    function syncHeader() {
+      const all = state.features.length;
+      const n = selected.length;
+      countEl.textContent = n + " of " + all;
+      const allSelected = n > 0 && n === all;
+      const someSelected = n > 0 && !allSelected;
+      allCb.input.checked = allSelected;
+      allCb.input.indeterminate = someSelected;
+      hintEl.style.display = n === 0 ? "block" : "none";
+    }
+
+    buildCards();
+    syncHeader();
+
+    // Name validation (Ant: required, min 2 → "Required")
+    function validateName() {
+      const v = nameInput.value.trim();
+      const bad = v.length < 2;
+      nameError.textContent = bad ? "Required" : "";
+      nameError.style.display = bad ? "block" : "none";
+      nameInput.style.borderColor = bad ? "#ff4d4f" : "#cbd5e1";
+      nameInput.style.boxShadow = bad ? "0 0 0 2px rgba(255,77,79,.12)" : "";
+      return !bad;
+    }
+    let touched = false;
+    nameInput.addEventListener("input", () => { if (touched) validateName(); });
+
+    const m = App.modal({
+      title: isEdit ? "Edit Role" : "Create Role",
+      subtitle: "Permissions decide which modules appear in the sidebar",
+      icon: isEdit ? "AiOutlineEdit" : "AiOutlinePlus",
+      iconTone: isEdit ? "amber" : "blue",
+      width: 560,
+      body,
+    });
+
+    const buttons = App.modalFooterButtons({
+      cancelText: "Cancel",
+      okText: isEdit ? "Save Changes" : "Create Role",
+      okTone: "blue",
+      onCancel: () => m.close(),
+      onOk: handleSubmit,
+    });
+    m.setFooter(buttons);
+
+    async function handleSubmit() {
+      if (submitting) return;
+      touched = true;
+      if (!validateName()) {
+        nameInput.focus();
+        return;
+      }
+      if (selected.length === 0) {
+        App.toast.warning("Select at least one module.");
+        return;
+      }
+      const payload = {
+        name: nameInput.value.trim(),
+        description: descInput.value.trim(),
+        is_active: !!activeSwitch.checked,
+        permissions: selected.slice(),
+      };
+      submitting = true;
+      App.setLoading(buttons.okBtn, true);
+      try {
+        if (isEdit) {
+          await App.api("/roles/" + encodeURIComponent(editingRole.id), { method: "PUT", body: payload });
+          App.toast.success("Role updated.");
+        } else {
+          await App.api("/roles/", { method: "POST", body: payload });
+          App.toast.success("Role created.");
+        }
+        m.close();
+        loadData();
+      } catch (err) {
+        App.toast.error(err.message || "Unable to save role.");
+      } finally {
+        submitting = false;
+        App.setLoading(buttons.okBtn, false);
+      }
+    }
+
+    // Enter in the name field submits, like the Ant form.
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(); } });
+    setTimeout(() => nameInput.focus(), 0);
+  }
+
+  createBtn.addEventListener("click", openCreate);
+
+  /* ── Boot ──────────────────────────────────────────────────────────────── */
+  void profile;
+  loadData();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Responsive tile grid (Tailwind: grid-cols-1 sm:grid-cols-2 xl:grid-cols-4) — cannot be inline. */
+  @media (min-width: 640px) { #metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+  @media (min-width: 1280px) { #metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; } }
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  App.requirePermission("dashboard");
+  const root = App.renderShell({
+    page: "dashboard",
+    title: "Dashboard",
+    subtitle: "Platform summary and operational insights.",
+  });
+
+  const esc = App.escapeHtml;
+  const MONO = App.tokens.MONO;
+  const PAGE_SIZE = 6;
+  const REFRESH_MS = 10 * 60 * 1000;
+
+  /* ── Metric definitions (Dashboard.jsx METRIC_DEFS) ─────────────────── */
+  const METRIC_DEFS = [
+    { key: "total_active_users", label: "Active Users", icon: "AiOutlineTeam", color: "#2563eb", rgb: "37,99,235" },
+    { key: "total_projects", label: "Projects", icon: "AiOutlineProject", color: "#0d9488", rgb: "13,148,136" },
+    { key: "total_queues", label: "Queues", icon: "AiOutlineInbox", color: "#7c3aed", rgb: "124,58,237" },
+    { key: "currently_working_users", label: "Working Now", icon: "AiOutlineUser", color: "#d97706", rgb: "217,119,6" },
+  ];
+
+  // Status → tone (Dashboard.jsx STATUS_STYLES); unknown falls back to pending.
+  const STATUS_TONE = {
+    pending: "slate", assigned: "amber", active: "blue", paused: "orange",
+    in_review: "purple", completed: "emerald", declined: "rose", reassigned: "amber",
+  };
+  const PRIORITY_TONE = { low: "emerald", medium: "blue", high: "amber", critical: "rose" };
+
+  const cardGlass = (rgb) =>
+    "background:linear-gradient(155deg, rgba(255,255,255,0.80) 0%, rgba(" + rgb + ",0.10) 100%);" +
+    "backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);" +
+    "border:1px solid rgba(255,255,255,0.7);box-shadow:0 14px 32px rgba(" + rgb + ",0.18), inset 0 1px 0 rgba(255,255,255,0.65);border-radius:18px;";
+
+  const SHIMMER =
+    "background:linear-gradient(90deg, rgba(148,163,184,.22) 25%, rgba(148,163,184,.38) 42%, rgba(148,163,184,.22) 60%);" +
+    "background-size:400% 100%;animation:shimmer 1.4s ease infinite;";
+
+  /* ── State ──────────────────────────────────────────────────────────── */
+  const state = {
+    stats: { total_active_users: 0, total_projects: 0, total_queues: 0, currently_working_users: 0 },
+    activeQueues: [],
+    lastUpdated: null,
+    page: 1,
+  };
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  root.innerHTML =
+    '<div id="metric-grid" style="display:grid;grid-template-columns:repeat(1, minmax(0,1fr));gap:16px"></div>' +
+    '<div style="' + App.tokens.GLASS + 'overflow:hidden">' +
+      '<div style="padding:16px 20px 12px;border-bottom:1px solid rgba(255,255,255,0.6);display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+        '<div style="display:flex;align-items:center;gap:10px;min-width:0">' +
+          '<div style="display:flex;height:36px;width:36px;flex-shrink:0;align-items:center;justify-content:center;border-radius:12px;color:#fff;' +
+            'background:linear-gradient(145deg,#2563eb,#1d4ed8);box-shadow:0 6px 14px rgba(37,99,235,0.35)">' +
+            App.icon("AiOutlineInbox", { size: 16 }) +
+          "</div>" +
+          '<div style="min-width:0">' +
+            App.sectionLabel("Active Queues") +
+            '<span style="display:block;font-size:11px;color:#64748b;margin-top:2px">Queues currently in progress across all projects.</span>' +
+          "</div>" +
+        "</div>" +
+        '<span id="aq-total" style="display:none;font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b;white-space:nowrap"></span>' +
+      "</div>" +
+      '<div id="aq-body"></div>' +
+    "</div>";
+
+  const metricGrid = root.querySelector("#metric-grid");
+  const aqTotal = root.querySelector("#aq-total");
+  const aqBody = root.querySelector("#aq-body");
+
+  /* ── Renderers ──────────────────────────────────────────────────────── */
+  function renderMetrics() {
+    const loading = !state.lastUpdated;
+    metricGrid.innerHTML = METRIC_DEFS.map((card) => {
+      const raw = state.stats[card.key];
+      const value = raw == null ? 0 : raw;
+      return (
+        '<div data-hover="tile" style="' + cardGlass(card.rgb) +
+          'box-sizing:border-box;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;transition:transform .2s ease">' +
+          '<div style="min-width:0">' +
+            '<span style="display:block;color:#475569;font-weight:600;font-size:11px;letter-spacing:.05em;text-transform:uppercase">' + esc(card.label) + "</span>" +
+            (loading
+              ? '<span aria-busy="true" style="display:block;width:70px;height:20px;margin-top:8px;border-radius:6px;' + SHIMMER + '"></span>'
+              : '<span style="display:block;margin-top:4px;font-size:30px;line-height:1;font-weight:700;color:#0f172a;font-family:' + MONO +
+                ';font-variant-numeric:tabular-nums">' + esc(value) + "</span>") +
+          "</div>" +
+          '<div style="display:flex;height:48px;width:48px;flex-shrink:0;align-items:center;justify-content:center;border-radius:16px;color:#fff;' +
+            "background:linear-gradient(145deg, " + card.color + " 0%, " + card.color + "cc 100%);box-shadow:0 8px 18px rgba(" + card.rgb + ',0.40)">' +
+            App.icon(card.icon, { size: 20 }) +
+          "</div>" +
+        "</div>"
+      );
+    }).join("");
+  }
+
+  const columns = [
+    {
+      title: "#", width: 60, align: "center",
+      render: (_, i) => '<span style="font-size:12px;font-family:' + MONO + ';color:#000;font-weight:600">' + (i + 1) + "</span>",
+    },
+    {
+      title: "Queue", key: "name",
+      render: (r) =>
+        '<div style="padding:2px 0;min-width:0">' +
+          '<span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>" +
+          '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.project_name || "—") + "</span>" +
+        "</div>",
+    },
+    {
+      title: "Progress", key: "progress", width: 220,
+      render: (r) => {
+        const pct = Math.max(0, Math.min(100, Number(r.progress) || 0));
+        return (
+          '<div style="min-width:0">' +
+            '<div style="display:flex;align-items:center;gap:8px;width:100%">' +
+              '<div style="flex:1;min-width:0;height:6px;border-radius:100px;background:#e8edf7;overflow:hidden">' +
+                '<div style="height:100%;border-radius:100px;background:#1d4ed8;width:' + pct + '%;transition:width .3s ease"></div>' +
+              "</div>" +
+              '<span style="flex-shrink:0;font-size:12px;color:#475569;min-width:34px;text-align:right">' + pct + "%</span>" +
+            "</div>" +
+            '<span style="display:block;font-size:11px;color:#64748b;margin-top:2px">' +
+              esc(r.done_tasks == null ? 0 : r.done_tasks) + " / " + esc(r.total_tasks == null ? 0 : r.total_tasks) + " done" +
+            "</span>" +
+          "</div>"
+        );
+      },
+    },
+    { title: "SLA", key: "sla_hours", width: 70, align: "center", render: (r) => App.slaBadge(r.sla_hours) },
+    {
+      title: "Priority", key: "priority", width: 110,
+      render: (r) => {
+        const p = String(r.priority || "").toLowerCase();
+        return p ? App.pill(p, PRIORITY_TONE[p] || "slate") : App.pill("—", "slate");
+      },
+    },
+    {
+      title: "Status", key: "status", width: 140,
+      render: (r) => {
+        const s = String(r.status || "").toLowerCase();
+        return App.pill((s || "—").replace(/_/g, " "), STATUS_TONE[s] || STATUS_TONE.pending, { dot: true });
+      },
+    },
+  ];
+
+  function renderQueues() {
+    const loading = !state.lastUpdated;
+    const rows = state.activeQueues;
+
+    if (loading) {
+      aqTotal.style.display = "none";
+      // ui-kit <Skeleton active/>: 16px title (38%) + three 14px rows (last 61%).
+      aqBody.innerHTML =
+        '<div aria-busy="true" style="padding:20px">' +
+          '<div style="height:16px;width:38%;margin-bottom:14px;border-radius:6px;' + SHIMMER + '"></div>' +
+          '<div style="height:14px;width:100%;margin-bottom:10px;border-radius:6px;' + SHIMMER + '"></div>' +
+          '<div style="height:14px;width:100%;margin-bottom:10px;border-radius:6px;' + SHIMMER + '"></div>' +
+          '<div style="height:14px;width:61%;border-radius:6px;' + SHIMMER + '"></div>' +
+        "</div>";
+      return;
+    }
+
+    aqTotal.textContent = rows.length + " total";
+    aqTotal.style.display = "inline";
+
+    if (!rows.length) {
+      aqBody.innerHTML =
+        '<div style="padding:8px 0">' +
+        App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">No active queues right now</span>') +
+        "</div>";
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    if (state.page > totalPages) state.page = totalPages;
+    const pageRows = rows.slice((state.page - 1) * PAGE_SIZE, state.page * PAGE_SIZE);
+
+    aqBody.innerHTML = '<div style="padding:12px"></div>';
+    App.table(aqBody.firstElementChild, {
+      columns,
+      rows: pageRows,
+      rowKey: "id",
+      pagination: {
+        page: state.page,
+        pageSize: PAGE_SIZE,
+        total: rows.length,
+        showSizeChanger: false,
+        onChange: (p) => { state.page = p; renderQueues(); },
+      },
+    });
+  }
+
+  function renderAll() {
+    renderMetrics();
+    renderQueues();
+  }
+
+  /* ── Data ───────────────────────────────────────────────────────────── */
+  async function loadAll() {
+    let statsErr = null;
+    let queuesErr = null;
+    const [s, q] = await Promise.all([
+      App.api("/dashboard/stats").catch((e) => { statsErr = e; return null; }),
+      App.api("/dashboard/active-queues").catch((e) => { queuesErr = e; return []; }),
+    ]);
+    if (s) state.stats = Object.assign({}, state.stats, s);
+    state.activeQueues = Array.isArray(q) ? q : (q && Array.isArray(q.items)) ? q.items : [];
+    state.lastUpdated = Date.now();
+    renderAll();
+    // Surface the first failure (the React apiClient toasts on error).
+    const err = statsErr || queuesErr;
+    if (err && err.status !== 401) App.toast.error(err.message);
+  }
+
+  renderAll(); // skeleton on first paint
+  await loadAll();
+  const timer = setInterval(loadAll, REFRESH_MS);
+  window.addEventListener("beforeunload", () => clearInterval(timer));
+})();
+</script>
+</body>
+</html>

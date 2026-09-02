@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: promptattack_db
+    restart: always
+    environment:
+      POSTGRES_DB: annotation_tool_promptattack
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d annotation_tool_promptattack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: promptattack_backend
+    restart: always
+    # The image's default CMD serves on port 8000 with no migrations. For
+    # compose, run migrations first and serve on 8005 (the port the frontend
+    # nginx proxies to and the healthcheck below probes). The DB wait is
+    # handled by depends_on: service_healthy. Migrations are non-fatal (same as
+    # entrypoint.sh): the app also ensures the schema at startup.
+    command: sh -c "alembic upgrade head || echo 'alembic failed; continuing'; exec uvicorn app.main:app --host 0.0.0.0 --port 8005"
+    environment:
+      APP_NAME: Prompt Attack Annotation Platform API
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: annotation_tool_promptattack
+      DB_USER: postgres
+      DB_PASS: "1234"
+      MAINTENANCE_DB: postgres
+      UPLOAD_FOLDER: uploads
+      # Static frontend is also mounted into the backend so the API host serves
+      # the app same-origin at http://localhost:8005/ (the nginx frontend
+      # service on port 80 is the primary entry point).
+      FRONTEND_DIR: /app/frontend
+      CORS_ORIGINS: http://localhost,http://127.0.0.1,http://localhost:8005,http://127.0.0.1:8005
+      DEFAULT_ADMIN_EMAIL: admin@gmail.com
+      DEFAULT_ADMIN_PASSWORD: Admin@123
+    volumes:
+      - backend_uploads:/app/uploads
+      - ./frontend:/app/frontend:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: promptattack_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  backend_uploads:

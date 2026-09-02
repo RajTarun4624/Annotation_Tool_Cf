@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annotation Queues · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+/* Only what inline styles cannot express: hover state for the orange Resume button and the small-screen stack. */
+[data-hover=btn-orange]:hover:not(:disabled){background:#ea580c!important}
+@media (max-width:640px){
+  [data-stack=header]{flex-direction:column;align-items:stretch!important}
+  [data-stack=left]{flex-wrap:wrap}
+  [data-stack=search]{max-width:none!important}
+}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  App.requirePermission("annotation_queues");
+  const root = App.renderShell({
+    page: "annotation_queues",
+    title: "Annotation Queues",
+    subtitle: "Your assigned work and task progress.",
+  });
+
+  const esc = App.escapeHtml;
+  const MONO = App.tokens.MONO;
+
+  /* ── Status / priority presentation (mirrors STATUS_STYLES / PRIORITY_STYLES in the reference) ── */
+  const STATUS_TONE = {
+    inactive: "slate",
+    active: "blue",
+    in_progress: "blue",
+    paused: "orange",
+    completed: "emerald",
+  };
+  const PRIORITY_TONE = { low: "emerald", medium: "blue", high: "amber", critical: "rose" };
+
+  /* ── State ─────────────────────────────────────────────────────────────── */
+  const state = {
+    activeTab: "production",
+    queues: [],
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    searchInput: "",
+    searchTerm: "",
+    loading: true,
+    selected: null,
+    starting: false,
+  };
+  const isProduction = () => state.activeTab === "production";
+  const displayStatus = () => (state.selected ? state.selected.user_status || state.selected.status : null);
+  const canStart = () => !!state.selected && displayStatus() !== "completed";
+  const isResume = () => displayStatus() === "paused" || displayStatus() === "in_progress";
+
+  /* ── Layout ────────────────────────────────────────────────────────────── */
+  const header = App.el(
+    '<div data-stack="header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px;flex-wrap:wrap">' +
+      '<div data-stack="left" style="display:flex;gap:4px;min-width:0;flex:1 1 auto;align-items:flex-start">' +
+        '<div data-stack="search" style="flex:1 1 auto;min-width:200px;max-width:384px"></div>' +
+        '<div data-role="tabs" style="flex-shrink:0"></div>' +
+      "</div>" +
+      '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
+        '<button type="button" data-role="refresh" data-tip="Refresh" data-hover="btn-default" aria-label="Refresh" style="display:inline-flex;align-items:center;justify-content:center;height:32px;width:32px;padding:0;border-radius:4px;border:1px solid #e2e8f0;background:#fff;color:#475569;cursor:pointer;font-size:14px;font-family:inherit;transition:.15s;line-height:0"></button>' +
+        '<span data-role="start-wrap" style="display:inline-flex">' +
+          '<button type="button" data-role="start" data-hover="btn-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 16px;border-radius:4px;border:0;background:#1d4ed8;color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:.15s"></button>' +
+        "</span>" +
+      "</div>" +
+    "</div>",
+  );
+  const panel = App.el('<div style="' + App.tokens.GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
+  const tableBox = App.el("<div></div>");
+  panel.appendChild(tableBox);
+  root.appendChild(header);
+  root.appendChild(panel);
+
+  const searchSlot = header.querySelector('[data-stack="search"]');
+  const tabsSlot = header.querySelector('[data-role="tabs"]');
+  const refreshBtn = header.querySelector('[data-role="refresh"]');
+  const startWrap = header.querySelector('[data-role="start-wrap"]');
+  const startBtn = header.querySelector('[data-role="start"]');
+
+  /* ── Search (debounced 300 ms → trimmed term, page reset) ──────────────── */
+  const applySearch = App.debounce(() => {
+    const term = state.searchInput.trim();
+    if (term === state.searchTerm) return;
+    state.searchTerm = term;
+    state.page = 1;
+    loadData();
+  }, 300);
+  const search = App.searchBox({
+    placeholder: "Search " + state.activeTab + " queues...",
+    value: state.searchInput,
+    onInput: (v) => { state.searchInput = v; applySearch(); },
+  });
+  searchSlot.appendChild(search);
+
+  /* ── Tabs (tinted: blue for Production, purple for QA) ─────────────────── */
+  App.tabs(tabsSlot, {
+    items: [
+      { key: "production", label: "Production" },
+      { key: "qa", label: "QA" },
+    ],
+    active: state.activeTab,
+    activeStyle: "tint",
+    onChange: (key) => {
+      state.activeTab = key;
+      state.page = 1;
+      search.input.placeholder = "Search " + key + " queues...";
+      loadData();
+    },
+  });
+
+  /* ── Header buttons ─────────────────────────────────────────────────────── */
+  const REFRESH_ICON = App.icon("AiOutlineReload", { size: 14 });
+  function paintRefresh() {
+    if (state.loading) {
+      refreshBtn.innerHTML =
+        '<span style="display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></span>';
+      refreshBtn.disabled = true;
+    } else {
+      refreshBtn.innerHTML = REFRESH_ICON;
+      refreshBtn.disabled = false;
+    }
+  }
+  refreshBtn.addEventListener("click", () => loadData());
+
+  function paintStart() {
+    const resume = isResume();
+    const label = resume ? "Resume" : isProduction() ? "Start Working" : "Start QA Review";
+    if (!state.starting) startBtn.textContent = label;
+    startBtn.style.background = resume ? "#f97316" : "#1d4ed8";
+    startBtn.setAttribute("data-hover", resume ? "btn-orange" : "btn-primary");
+    App.setDisabled(startBtn, !canStart());
+    // Disabled buttons do not emit mouseover in some browsers, so let hover land on the wrapper
+    // that carries data-tip (same trick AntD uses: pointer-events:none on a disabled button in a Tooltip).
+    startBtn.style.pointerEvents = canStart() ? "" : "none";
+    const tip = !state.selected ? "Select a queue first" : !canStart() ? "Queue is already completed" : "";
+    App.tooltip(startWrap, tip);
+  }
+
+  startBtn.addEventListener("click", () => {
+    const q = state.selected;
+    if (!q) return;
+    if (displayStatus() === "completed") {
+      App.toast.warning("Queue is already completed.");
+      return;
+    }
+    state.starting = true;
+    App.setLoading(startBtn, true);
+    try {
+      // SPEC2 6.4: production work → workspace.html, QA review → qa-workspace.html.
+      const target = q.annotation_type === "qa" ? "qa-workspace.html" : "workspace.html";
+      location.href = target + "?queue=" + encodeURIComponent(q.id);
+    } catch (err) {
+      App.toast.error(err.message || "Unable to start session.");
+      state.starting = false;
+      App.setLoading(startBtn, false);
+      paintStart();
+    }
+  });
+
+  // Returning via the browser Back button can restore this page from bfcache with the Start
+  // button still spinning/disabled; reset it and refresh progress after the workspace visit.
+  window.addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    state.starting = false;
+    App.setLoading(startBtn, false);
+    paintStart();
+    if (profile.id) loadData();
+  });
+
+  /* ── Cell renderers ─────────────────────────────────────────────────────── */
+  function renderProgress(r) {
+    const isQARow = r.annotation_type === "qa";
+    const total = Number(r.total_tasks) || 0;
+    const done = isQARow ? Number(r.approved_tasks) || 0 : Number(r.user_done_tasks) || 0;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    // Reference: <Progress size="small" showInfo> with the page override
+    // [&_.ui-progress-text]:!text-slate-900 !font-semibold — App.progress's label is slate-600/normal,
+    // so the bar + "NN%" label are built locally to match.
+    return (
+      '<div style="min-width:0">' +
+      '<div style="display:flex;align-items:center;gap:8px;width:100%">' +
+        '<div style="flex:1;min-width:0;height:6px;border-radius:100px;background:rgba(148,163,184,0.25);overflow:hidden">' +
+          '<div style="height:100%;border-radius:100px;background:' + (isQARow ? "#7c3aed" : "#1d4ed8") + ";width:" + pct + '%;transition:width .3s ease"></div>' +
+        "</div>" +
+        '<span style="flex-shrink:0;font-size:12px;font-weight:600;color:#0f172a;min-width:34px;text-align:right">' + pct + "%</span>" +
+      "</div>" +
+      '<span style="display:block;font-size:11px;font-weight:600;color:#1e293b;margin-top:2px">' +
+      done + " / " + total + (isQARow ? " reviewed" : " submitted") +
+      "</span></div>"
+    );
+  }
+  function renderAnnotators(r) {
+    const n = r.required_annotators == null ? "—" : String(r.required_annotators);
+    return (
+      '<span data-tip="Annotators required per task" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;font-family:' + MONO +
+      ';font-weight:700;font-size:12px;background:#f1f5f9;color:#0f172a;padding:2px 10px;border-radius:4px;white-space:nowrap">' +
+      App.icon("AiOutlineTeam", { size: 12, color: "#475569" }) + esc(n) + "</span>"
+    );
+  }
+  function renderTimer(s) {
+    return (
+      '<span style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO +
+      ';font-weight:700;font-size:12px;background:#f1f5f9;color:#0f172a;padding:2px 10px;border-radius:4px">' +
+      esc(App.fmt.timer(s)) + "</span>"
+    );
+  }
+  function renderPriority(p) {
+    const key = String(p || "").toLowerCase();
+    return App.pill(p ? key : "—", PRIORITY_TONE[key] || "slate");
+  }
+  function renderStatus(r) {
+    const s = String(r.user_status || r.status || "").toLowerCase();
+    return App.pill(s.replace(/_/g, " "), STATUS_TONE[s] || "slate", { dot: true });
+  }
+  function renderCreated(d) {
+    const date = d ? App.fmt.date(d) : "—";
+    if (!d || date === "—") return '<span style="font-size:12px;color:#475569">—</span>';
+    return (
+      '<span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#0f172a;background:#f8fafc;border:1px solid #e2e8f0">' +
+      esc(date) + '<span style="font-family:' + MONO + ';font-size:10px;color:#3730a3">' + esc(App.fmt.time(d)) + "</span></span>"
+    );
+  }
+
+  function columns() {
+    const cols = [
+      {
+        title: "", key: "_select", width: 40, align: "center",
+        render: (r) =>
+          '<input type="radio" name="aq-select" aria-label="Select queue"' + (state.selected && state.selected.id === r.id ? " checked" : "") +
+          ' style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;margin:0;display:inline-block;vertical-align:middle">',
+      },
+      {
+        title: "#", key: "_index", width: 60, align: "center",
+        render: (r, i) =>
+          '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>",
+      },
+      {
+        title: "Queue", key: "name", width: 180, ellipsis: true,
+        render: (r) =>
+          '<span title="' + esc(r.name) + '" style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>",
+      },
+      { title: "Progress", key: "_progress", width: 220, render: renderProgress },
+    ];
+    if (isProduction()) cols.push({ title: "Annotators", key: "_annotators", width: 110, render: renderAnnotators });
+    cols.push(
+      { title: "Timer / Task", key: "timer_seconds", width: 130, render: (r) => renderTimer(r.timer_seconds) },
+      { title: "Priority", key: "priority", width: 110, render: (r) => renderPriority(r.priority) },
+      { title: "Status", key: "_status", width: 140, render: renderStatus },
+      { title: "Created", key: "created_at", render: (r) => renderCreated(r.created_at) },
+    );
+    return cols;
+  }
+
+  /* ── Table ──────────────────────────────────────────────────────────────── */
+  function emptyDescriptionHtml() {
+    const tab = state.activeTab;
+    return (
+      '<div style="display:flex;flex-direction:column;gap:4px">' +
+        '<div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#334155">No ' + esc(tab) + " queues assigned to you</div>" +
+        '<div style="font-size:11px;color:#64748b">' +
+        (isProduction()
+          ? "Contact your manager to get production queues assigned."
+          : "QA queues appear here after production annotators submit tasks.") +
+        "</div></div>"
+    );
+  }
+
+  // Keyboard changes to the radio group (arrow keys) check a radio natively without a click;
+  // sync the selection from the change event so state and the Start button match the visible radio.
+  tableBox.addEventListener("change", (e) => {
+    if (!e.target || e.target.name !== "aq-select") return;
+    const tr = e.target.closest("tr");
+    if (!tr) return;
+    const row = state.queues.find((q) => String(q.id) === tr.dataset.key);
+    if (row) {
+      state.selected = row;
+      paintTable();
+      paintStart();
+      // paintTable() rebuilds the rows; put focus back on the checked radio so arrow keys keep working.
+      const checked = tableBox.querySelector('input[name="aq-select"]:checked');
+      if (checked) checked.focus({ preventScroll: true });
+    }
+  });
+
+  function paintTable() {
+    // Reference: when !loading && queues.length === 0 the whole <Table> is replaced by
+    // <div className="py-16"><Empty … /></div> — no header row, no pagination.
+    if (!state.loading && !state.queues.length) {
+      tableBox.innerHTML = '<div style="padding:64px 0">' + App.emptyState(emptyDescriptionHtml()) + "</div>";
+      return;
+    }
+    App.table(tableBox, {
+      columns: columns(),
+      rows: state.queues,
+      rowKey: "id",
+      loading: state.loading,
+      // While loading with no rows only the Table's spinner overlay shows (as in the reference);
+      // the blank spacer just gives the overlay room.
+      emptyHtml: '<div style="min-height:160px"></div>',
+      minWidth: 900,
+      onRowClick: (row) => {
+        state.selected = row;
+        paintTable();
+        paintStart();
+      },
+      rowStyle: (row) => (state.selected && state.selected.id === row.id ? "background:rgba(239,246,255,0.4);" : ""),
+      pagination: {
+        page: state.page,
+        pageSize: state.pageSize,
+        total: state.total,
+        showSizeChanger: true,
+        pageSizeOptions: [10, 25, 50, 100],
+        onChange: (nextPage, nextSize) => {
+          state.page = nextPage;
+          if (nextSize !== state.pageSize) state.pageSize = nextSize;
+          loadData();
+        },
+      },
+    });
+  }
+
+  /* ── Data ───────────────────────────────────────────────────────────────── */
+  let loadSeq = 0;
+  async function loadData() {
+    const seq = ++loadSeq;
+    state.loading = true;
+    state.selected = null;
+    paintRefresh();
+    paintStart();
+    paintTable();
+    try {
+      const params = new URLSearchParams();
+      if (profile.id) params.set("assigned_user_id", profile.id);
+      params.set("annotation_type", state.activeTab);
+      if (state.searchTerm) params.set("search", state.searchTerm);
+      params.set("exclude_completed", "true");
+      params.set("page", String(state.page));
+      params.set("page_size", String(state.pageSize));
+      const resp = await App.api("/queues/?" + params.toString());
+      if (seq !== loadSeq) return; // a newer load superseded this one
+      const items = Array.isArray(resp) ? resp : (resp && resp.items) || [];
+      const total = Array.isArray(resp) ? resp.length : resp && resp.total != null ? resp.total : items.length;
+      state.queues = items.filter((q) => q.annotation_type === state.activeTab);
+      state.total = Number(total) || 0;
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      App.toast.error(err.message || "Unable to load queues.");
+    } finally {
+      if (seq === loadSeq) {
+        state.loading = false;
+        paintRefresh();
+        paintStart();
+        paintTable();
+      }
+    }
+  }
+
+  paintRefresh();
+  paintStart();
+  if (profile.id) loadData();
+  else { state.loading = false; paintRefresh(); paintTable(); }
+})();
+</script>
+</body>
+</html>

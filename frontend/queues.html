@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queues · Prompt Attack Annotation</title>
+  <link rel="icon" href="public/favi.png">
+  <style>
+    /* Only what inline styles cannot express: hover/checked states for the user rows. */
+    [data-userrow]:not([data-checked]):hover{background:#f8fafc!important}
+    [data-userrow][data-checked]:hover{background:rgba(239,246,255,.7)!important}
+    [data-hover=btn-excel]:hover:not(:disabled){background:#f8fafc!important}
+    [data-hover=qatag]:hover{background:#f3e8ff!important;border-color:#d8b4fe!important}
+    [data-hover=linkbtn]:hover{color:#1d4ed8!important}
+    @media (max-width:640px){[data-stack=sm]{flex-direction:column!important;align-items:stretch!important}[data-stack=sm]>*{width:100%!important;max-width:none!important}}
+    @media (max-width:720px){[data-grid=form5]{grid-template-columns:repeat(2,minmax(0,1fr))!important}[data-grid=form2]{grid-template-columns:minmax(0,1fr)!important}}
+  </style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  if (!App.requirePermission("queues")) return;
+  const root = App.renderShell({ page: "queues", title: "Queues", subtitle: "Monitor pending operational activity." });
+
+  const { INPUT_STYLE, GLASS, MONO } = App.tokens;
+  const esc = App.escapeHtml;
+  const LABEL = (t) => App.sectionLabel(t);
+
+  /* ── State ─────────────────────────────────────────────────────────────── */
+  const state = {
+    queues: [],
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    tab: "all",
+    searchInput: "",
+    searchTerm: "",
+    status: "",
+    priority: "",
+    createdFrom: "",
+    createdTo: "",
+    loading: true,
+    loadedOnce: false,
+    users: [],
+    usersLoaded: false,
+    exporting: false,
+  };
+
+  /* ── Helpers ───────────────────────────────────────────────────────────── */
+  const slug = (s) =>
+    String(s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "task";
+  const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+  const num = (v) => Number(v) || 0;
+
+  const BTN_BASE =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;box-sizing:border-box;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
+  const ICON_BTN =
+    BTN_BASE + "height:32px;width:32px;border-radius:4px;border:0;background:transparent;color:#000;padding:0;flex-shrink:0;";
+  const fieldStyle = INPUT_STYLE;
+  const labelRow = (label, rightHtml) =>
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px">' +
+    LABEL(label) + (rightHtml || "") + "</div>";
+
+  function miniBadge(text, iconName) {
+    return (
+      '<span style="display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border-radius:4px;border:1px solid #e2e8f0;background:#f1f5f9;' +
+      'color:#334155;font-size:10px;font-weight:600;letter-spacing:.03em;white-space:nowrap;line-height:1.5">' +
+      (iconName ? App.icon(iconName, { size: 10 }) : "") + esc(text) + "</span>"
+    );
+  }
+
+  async function loadUsers(force) {
+    if (state.usersLoaded && !force) return state.users;
+    try {
+      const res = await App.api("/users/?page=1&page_size=500");
+      state.users = Array.isArray(res) ? res : (res && res.items) || [];
+      state.usersLoaded = true;
+    } catch (e) {
+      state.users = state.users || [];
+    }
+    return state.users;
+  }
+
+  /* ── Layout ────────────────────────────────────────────────────────────── */
+  root.innerHTML = "";
+
+  // Header strip — search left, tabs + actions right.
+  const headerStrip = App.el(
+    '<div data-stack="sm" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px;flex-wrap:wrap">' +
+      '<div data-role="search" style="width:100%;max-width:384px;min-width:0"></div>' +
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">' +
+      '<div data-role="tabs"></div>' +
+      '<button type="button" data-role="export" data-hover="btn-excel" style="' + BTN_BASE +
+      'height:36px;border-radius:8px;padding:0 12px;font-size:14px;font-weight:600;color:#475569;border:1px solid #e2e8f0;background:#fff">' +
+      App.icon("AiOutlineFileExcel", { size: 14 }) + "<span>Export Excel</span></button>" +
+      '<button type="button" data-role="create" data-hover="btn-primary" style="' + BTN_BASE +
+      'height:36px;border-radius:8px;padding:0 16px;font-size:14px;font-weight:600;color:#fff;border:0;background:#1d4ed8;box-shadow:0 1px 2px rgba(0,0,0,.05)">' +
+      App.icon("AiOutlinePlus", { size: 14 }) + "<span>Create Queue</span></button>" +
+      "</div></div>",
+  );
+  root.appendChild(headerStrip);
+
+  const searchPlaceholder = () => "Search queues" + (state.tab === "all" ? "" : " in " + state.tab) + "...";
+  const applySearch = App.debounce((value) => {
+    const term = value.trim();
+    if (term === state.searchTerm) return;
+    state.searchTerm = term;
+    state.page = 1;
+    loadData();
+  }, 300);
+  const search = App.searchBox({
+    placeholder: searchPlaceholder(),
+    value: "",
+    onInput: (v) => { state.searchInput = v; applySearch(v); },
+  });
+  headerStrip.querySelector('[data-role="search"]').appendChild(search);
+
+  const tabsHost = headerStrip.querySelector('[data-role="tabs"]');
+  App.tabs(tabsHost, {
+    items: [{ key: "all", label: "All" }, { key: "production", label: "Production" }, { key: "qa", label: "QA" }],
+    active: state.tab,
+    activeStyle: "solid",
+    onChange: (key) => {
+      state.tab = key;
+      state.page = 1;
+      search.input.placeholder = searchPlaceholder();
+      loadData();
+    },
+  });
+
+  const exportBtn = headerStrip.querySelector('[data-role="export"]');
+  exportBtn.addEventListener("click", async () => {
+    if (state.exporting) return;
+    state.exporting = true;
+    App.setLoading(exportBtn, true);
+    try {
+      const qs = state.tab !== "all" ? "?environment=" + encodeURIComponent(state.tab) : "";
+      await App.download("/tasks/export" + qs, "tasks_report.xlsx");
+      App.toast.success("Tasks exported to Excel successfully.");
+    } catch (err) {
+      App.toast.error(err.message || "Excel export failed.");
+    } finally {
+      state.exporting = false;
+      App.setLoading(exportBtn, false);
+    }
+  });
+  headerStrip.querySelector('[data-role="create"]').addEventListener("click", () => openCreateModal());
+
+  // Filter bar — status / priority / created range.
+  const filterBar = App.el('<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"></div>');
+  root.appendChild(filterBar);
+  const statusSel = App.select({
+    options: [{ label: "Inactive", value: "inactive" }, { label: "Active", value: "active" }, { label: "Completed", value: "completed" }],
+    value: "", placeholder: "All statuses", allowEmpty: true, width: 150, glass: true,
+    onChange: (v) => { state.status = v || ""; state.page = 1; loadData(); syncClearFilters(); },
+  });
+  statusSel.setAttribute("aria-label", "Status filter");
+  const prioritySel = App.select({
+    options: [{ label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }, { label: "Critical", value: "critical" }],
+    value: "", placeholder: "All priorities", allowEmpty: true, width: 150, glass: true,
+    onChange: (v) => { state.priority = v || ""; state.page = 1; loadData(); syncClearFilters(); },
+  });
+  prioritySel.setAttribute("aria-label", "Priority filter");
+  const dateField = (label, aria) =>
+    App.el(
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#64748b">' + label + "</span>" +
+        '<input type="date" aria-label="' + aria + '" data-hover="fieldfocus" style="' + fieldStyle + 'width:150px;height:36px;border-radius:8px">' +
+        "</div>",
+    );
+  const fromWrap = dateField("From", "Created from");
+  const toWrap = dateField("To", "Created to");
+  const fromInput = fromWrap.querySelector("input");
+  const toInput = toWrap.querySelector("input");
+  fromInput.addEventListener("change", () => { state.createdFrom = fromInput.value; state.page = 1; loadData(); syncClearFilters(); });
+  toInput.addEventListener("change", () => { state.createdTo = toInput.value; state.page = 1; loadData(); syncClearFilters(); });
+  const clearBtn = App.el(
+    '<button type="button" data-hover="linkbtn" style="display:none;padding:4px 8px;border:0;background:none;cursor:pointer;font-family:inherit;' +
+      'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#2563eb;transition:color .15s">Clear filters</button>',
+  );
+  clearBtn.addEventListener("click", () => {
+    state.status = ""; state.priority = ""; state.createdFrom = ""; state.createdTo = "";
+    statusSel.value = ""; prioritySel.value = ""; fromInput.value = ""; toInput.value = "";
+    state.page = 1;
+    syncClearFilters();
+    loadData();
+  });
+  filterBar.appendChild(statusSel);
+  filterBar.appendChild(prioritySel);
+  filterBar.appendChild(fromWrap);
+  filterBar.appendChild(toWrap);
+  filterBar.appendChild(clearBtn);
+  function syncClearFilters() {
+    const has = !!(state.status || state.priority || state.createdFrom || state.createdTo);
+    clearBtn.style.display = has ? "inline-flex" : "none";
+  }
+
+  // Table panel.
+  const panel = App.el('<div style="' + GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
+  const tableHost = App.el("<div></div>");
+  panel.appendChild(tableHost);
+  root.appendChild(panel);
+
+  /* ── Data ──────────────────────────────────────────────────────────────── */
+  let loadSeq = 0;
+  async function loadData() {
+    const seq = ++loadSeq;
+    state.loading = true;
+    renderTable();
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(state.page));
+      params.set("page_size", String(state.pageSize));
+      if (state.tab !== "all") params.set("annotation_type", state.tab);
+      if (state.searchTerm) params.set("search", state.searchTerm);
+      if (state.status) params.set("status", state.status);
+      if (state.priority) params.set("priority", state.priority);
+      if (state.createdFrom) params.set("created_from", state.createdFrom);
+      if (state.createdTo) params.set("created_to", state.createdTo);
+      const [qResp] = await Promise.all([App.api("/queues/?" + params.toString()), loadUsers(false)]);
+      if (seq !== loadSeq) return;
+      const items = Array.isArray(qResp) ? qResp : (qResp && qResp.items) || [];
+      const total = Array.isArray(qResp) ? qResp.length : qResp && qResp.total != null ? qResp.total : items.length;
+      state.queues = items;
+      state.total = total;
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      App.toast.error(err.message || "Unable to load queues.");
+    } finally {
+      if (seq === loadSeq) {
+        state.loading = false;
+        state.loadedOnce = true;
+        renderTable();
+      }
+    }
+  }
+
+  /* ── Table ─────────────────────────────────────────────────────────────── */
+  function renderAssignees(r) {
+    const ids = r.assigned_user_ids || [];
+    const names = r.assigned_user_names || [];
+    const tag = (n) =>
+      '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0;background:#f8fafc;color:#334155;font-size:12px;white-space:nowrap;line-height:1.4">' +
+      App.icon("AiOutlineTeam", { size: 10 }) + esc(n + " assigned") + "</span>";
+    if (!ids.length && r.assigned_user_name) {
+      return '<div style="display:flex;align-items:center;gap:6px;min-width:0">' + tag(1) +
+        '<span style="font-size:12px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">' + esc(r.assigned_user_name) + "</span></div>";
+    }
+    if (!ids.length) return '<span style="font-size:12px;color:#94a3b8">Unassigned</span>';
+    const first = names[0] || "—";
+    return '<div style="display:flex;align-items:center;gap:6px;min-width:0">' + tag(ids.length) +
+      '<span title="' + esc(names.join(", ")) + '" style="font-size:12px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">' +
+      esc(first) + (ids.length > 1 ? " +" + (ids.length - 1) : "") + "</span></div>";
+  }
+
+  function renderQueueCell(r) {
+    const isProd = (r.annotation_type || "production") !== "qa";
+    let extras = "";
+    if (isProd) {
+      const n = r.required_annotators != null ? num(r.required_annotators) : 3;
+      extras += miniBadge(plural(n, "annotator"), "AiOutlineTeam");
+      if (r.linked_qa_queue_id) {
+        extras +=
+          '<a href="queue-tasks.html?id=' + encodeURIComponent(r.linked_qa_queue_id) + '" data-hover="qatag" data-tip="Open the linked QA queue" ' +
+          'style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;border:1px solid #e9d5ff;background:#faf5ff;color:#7e22ce;' +
+          'font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;text-decoration:none;line-height:1.5;transition:.15s">QA' +
+          App.icon("AiOutlineRight", { size: 8 }) + "</a>";
+      }
+    }
+    return (
+      '<div style="padding:2px 0;min-width:0">' +
+      '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">' +
+      '<span style="font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">' + esc(r.name) + "</span>" +
+      extras + "</div>" +
+      '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.project_name || "—") + "</span>" +
+      "</div>"
+    );
+  }
+
+  function renderProgress(r) {
+    const isQa = r.annotation_type === "qa";
+    const total = num(r.total_tasks);
+    const done = num(r.approved_tasks);
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    return (
+      '<div style="min-width:0">' + App.progress(pct, isQa ? "#7c3aed" : "#1d4ed8", true) +
+      '<span style="display:block;font-size:11px;color:#64748b;margin-top:2px">' + done + " / " + total + (isQa ? " reviewed" : " finalised") + "</span></div>"
+    );
+  }
+
+  function renderActions(r) {
+    const wrap = App.el('<div style="display:flex;justify-content:flex-end;gap:4px"></div>');
+    const open = App.el(
+      '<button type="button" data-hover="btn-primary" data-tip="Open queue tasks" style="' + BTN_BASE +
+        'height:28px;padding:0 8px;border-radius:4px;border:0;background:#1d4ed8;color:#fff;font-size:11px;font-weight:600">' +
+        App.icon("AiOutlineFolderOpen", { size: 12 }) + "<span>Open</span></button>",
+    );
+    open.addEventListener("click", () => { location.href = "queue-tasks.html?id=" + encodeURIComponent(r.id); });
+    const exp = App.el('<button type="button" data-hover="btn-text" data-tip="Export results" aria-label="Export results" style="' + ICON_BTN + '">' + App.icon("AiOutlineDownload", { size: 15 }) + "</button>");
+    exp.addEventListener("click", () => openExportModal(r));
+    const assign = App.el('<button type="button" data-hover="btn-text" data-tip="Manage assignments — add or remove users in one place" aria-label="Manage assignments" style="' + ICON_BTN + '">' + App.icon("AiOutlineUserAdd", { size: 15 }) + "</button>");
+    assign.addEventListener("click", () => openAssignModal(r));
+    const del = App.el('<button type="button" data-hover="btn-danger-text" data-tip="Delete queue" aria-label="Delete queue" style="' + ICON_BTN + 'color:#e11d48">' + App.icon("AiOutlineDelete", { size: 15 }) + "</button>");
+    del.addEventListener("click", async () => {
+      const isProd = (r.annotation_type || "production") !== "qa";
+      const description = isProd
+        ? (r.linked_qa_queue_id
+            ? "Its linked QA queue and every task are deleted too. This action cannot be undone."
+            : "All of its tasks are deleted. This action cannot be undone.")
+        : "The production queue keeps its tasks; only this QA queue and its link are removed.";
+      const ok = await App.popconfirm(del, { title: "Delete this queue?", description, okText: "Delete", cancelText: "Cancel", danger: true });
+      if (ok) handleDelete(r);
+    });
+    wrap.appendChild(open);
+    wrap.appendChild(exp);
+    wrap.appendChild(assign);
+    wrap.appendChild(del);
+    return wrap;
+  }
+
+  const columns = [
+    { title: "#", key: "index", width: 60, align: "center",
+      render: (r, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>" },
+    { title: "Queue", key: "name", render: (r) => renderQueueCell(r) },
+    { title: "Type", key: "annotation_type", width: 110, render: (r) => App.typePill(r.annotation_type) },
+    { title: "Tasks", key: "progress", width: 200, render: (r) => renderProgress(r) },
+    { title: "Status", key: "status", width: 130, render: (r) => App.statusPill(r.status || "inactive") },
+    { title: "Priority", key: "priority", width: 100, render: (r) => App.priorityPill(r.priority) },
+    { title: "SLA", key: "sla_hours", width: 70, align: "center", render: (r) => App.slaBadge(r.sla_hours) },
+    { title: "Assigned", key: "assigned", width: 200, render: (r) => renderAssignees(r) },
+    { title: "Actions", key: "actions", width: 220, align: "right", render: (r) => renderActions(r) },
+  ];
+
+  function renderTable() {
+    App.table(tableHost, {
+      columns,
+      rows: state.queues,
+      rowKey: "id",
+      loading: state.loading,
+      minWidth: 1100,
+      emptyHtml: state.loading && !state.loadedOnce ? '<div style="padding:8px 0">' + App.skeleton(5) + "</div>" : App.emptyState("No queues found"),
+      pagination: {
+        page: state.page,
+        pageSize: state.pageSize,
+        total: state.total,
+        showSizeChanger: true,
+        pageSizeOptions: [10, 25, 50, 100],
+        onChange: (p, s) => {
+          state.page = p;
+          if (s !== state.pageSize) state.pageSize = s;
+          loadData();
+        },
+      },
+    });
+  }
+
+  async function handleDelete(queue) {
+    try {
+      await App.api("/queues/" + encodeURIComponent(queue.id), { method: "DELETE" });
+      App.toast.success("Queue deleted.");
+      // A production queue takes its linked QA queue with it; both rows only show together on the "All" tab.
+      const removed = state.tab === "all" && queue.annotation_type !== "qa" && queue.linked_qa_queue_id ? 2 : 1;
+      const remaining = Math.max(0, state.total - removed);
+      const lastPage = Math.max(1, Math.ceil(remaining / state.pageSize));
+      state.page = Math.min(state.page, lastPage);
+      loadData();
+    } catch (err) {
+      App.toast.error(err.message || "Unable to delete queue.");
+    }
+  }
+
+  /* ── Assign Users modal ────────────────────────────────────────────────── */
+  async function openAssignModal(queue) {
+    const isProd = (queue.annotation_type || "production") !== "qa";
+    const required = queue.required_annotators != null ? num(queue.required_annotators) : (isProd ? 3 : 1);
+    let selected = new Set(queue.assigned_user_ids || []);
+    let userSearch = "";
+
+    const m = App.modal({
+      title: "Assign Users",
+      subtitle: (queue.name || "—") + (isProd ? " · every annotator reviews every task" : " · QA reviewers"),
+      icon: "AiOutlineTeam",
+      iconTone: "blue",
+      width: 560,
+      body: "",
+    });
+
+    const body = App.el('<div style="display:flex;flex-direction:column;gap:12px"></div>');
+    const filterBlock = App.el(
+      "<div>" +
+        labelRow("Filter", '<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#475569"><span style="color:#94a3b8">selected</span> <span data-role="count">0</span></span>') +
+        '<div style="display:flex;align-items:center;gap:8px"><div data-role="search" style="flex:1;min-width:0"></div><div data-role="selectall" style="margin-left:4px;white-space:nowrap"></div></div>' +
+        "</div>",
+    );
+    const usersBlock = App.el(
+      "<div>" +
+        labelRow("Users", '<span data-role="shown" style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b"></span>') +
+        '<div style="border:1px solid #e2e8f0;border-radius:8px;background:#fff;overflow:hidden"><div data-role="list" style="max-height:420px;overflow-y:auto;overflow-x:hidden"></div></div>' +
+        "</div>",
+    );
+    const warnBox = App.el(
+      '<div data-role="warn" style="display:none;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:8px;border:1px solid #fde68a;background:#fffbeb;color:#b45309;font-size:12.5px;line-height:1.5">' +
+        App.icon("AiOutlineWarning", { size: 14, style: "flex-shrink:0;margin-top:2px" }) + '<span data-role="warn-text"></span></div>',
+    );
+    body.appendChild(filterBlock);
+    body.appendChild(usersBlock);
+    body.appendChild(warnBox);
+    m.setBody(body);
+
+    const countEl = filterBlock.querySelector('[data-role="count"]');
+    const shownEl = usersBlock.querySelector('[data-role="shown"]');
+    const listEl = usersBlock.querySelector('[data-role="list"]');
+    const warnText = warnBox.querySelector('[data-role="warn-text"]');
+
+    const sb = App.searchBox({ placeholder: "Search by name or email...", value: "", onInput: (v) => { userSearch = v; renderList(); } });
+    filterBlock.querySelector('[data-role="search"]').appendChild(sb);
+    const selectAll = App.checkbox({
+      label: '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#334155">Select all</span>',
+      labelIsHtml: true,
+      onChange: (checked) => {
+        const ids = filtered().map((u) => u.id);
+        if (checked) ids.forEach((id) => selected.add(id));
+        else ids.forEach((id) => selected.delete(id));
+        renderList();
+      },
+    });
+    filterBlock.querySelector('[data-role="selectall"]').appendChild(selectAll);
+
+    const footer = App.modalFooterButtons({
+      cancelText: "Cancel",
+      okText: "Save",
+      okTone: "blue",
+      onCancel: () => m.close(),
+      onOk: async () => {
+        const ids = Array.from(selected);
+        App.setLoading(footer.okBtn, true);
+        try {
+          await App.api("/queues/" + encodeURIComponent(queue.id) + "/assignees", { method: "PUT", body: { user_ids: ids } });
+          App.toast.success(ids.length === 0 ? "All users removed from queue." : "Queue assigned to " + plural(ids.length, "user") + ".");
+          m.close();
+          loadData();
+        } catch (err) {
+          App.toast.error(err.message || "Unable to update assignments.");
+          App.setLoading(footer.okBtn, false);
+        }
+      },
+    });
+    m.setFooter(footer);
+
+    const activeUsers = () => (state.users || []).filter((u) => u.is_active);
+    const filtered = () => {
+      const q = userSearch.trim().toLowerCase();
+      const all = activeUsers();
+      if (!q) return all;
+      return all.filter((u) => (u.full_name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q));
+    };
+
+    function syncMeta() {
+      countEl.textContent = String(selected.size);
+      if (footer.okBtn.dataset.loading !== "1") footer.okBtn.innerHTML = "Save · " + plural(selected.size, "user");
+      const list = filtered();
+      const selCount = list.filter((u) => selected.has(u.id)).length;
+      selectAll.input.checked = list.length > 0 && selCount === list.length;
+      selectAll.input.indeterminate = selCount > 0 && selCount < list.length;
+      shownEl.textContent = list.length + " of " + activeUsers().length + " shown";
+      if (isProd && selected.size < required) {
+        warnBox.style.display = "flex";
+        warnText.textContent =
+          "This queue needs " + plural(required, "annotator") + " per task — only " + selected.size + " selected. " +
+          "Tasks will not reach QA until " + required + " annotators have submitted.";
+      } else {
+        warnBox.style.display = "none";
+      }
+    }
+
+    function renderList() {
+      const list = filtered();
+      listEl.innerHTML = "";
+      if (!list.length) {
+        listEl.innerHTML = '<div style="padding:24px 0">' + App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">No users match the search</span>') + "</div>";
+      } else {
+        list.forEach((u, idx) => {
+          const checked = selected.has(u.id);
+          const row = App.el(
+            '<label data-userrow' + (checked ? " data-checked" : "") + ' style="display:flex;align-items:center;gap:12px;padding:8px 12px;cursor:pointer;transition:background .15s;' +
+              (idx < list.length - 1 ? "border-bottom:1px solid #f1f5f9;" : "") + "background:" + (checked ? "rgba(239,246,255,.5)" : "transparent") + ';">' +
+              '<input type="checkbox" style="width:16px;height:16px;accent-color:#1d4ed8;margin:0;cursor:pointer;flex-shrink:0">' +
+              '<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;text-transform:uppercase;flex-shrink:0">' +
+              esc((u.full_name || u.email || "?").charAt(0)) + "</span>" +
+              '<span style="min-width:0;flex:1"><span style="display:block;font-size:14px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.full_name || u.email) + "</span>" +
+              '<span style="display:block;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.email || "") + "</span></span>" +
+              (u.role_name ? '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;white-space:nowrap">' + esc(u.role_name) + "</span>" : "") +
+              "</label>",
+          );
+          const cb = row.querySelector("input");
+          cb.checked = checked;
+          cb.addEventListener("change", () => {
+            if (cb.checked) selected.add(u.id); else selected.delete(u.id);
+            if (cb.checked) row.setAttribute("data-checked", ""); else row.removeAttribute("data-checked");
+            row.style.background = cb.checked ? "rgba(239,246,255,.5)" : "transparent";
+            syncMeta();
+          });
+          listEl.appendChild(row);
+        });
+      }
+      syncMeta();
+    }
+
+    if (!state.usersLoaded) {
+      listEl.innerHTML = '<div style="padding:16px">' + App.skeleton(4) + "</div>";
+      await loadUsers(true);
+    }
+    renderList();
+  }
+
+  /* ── Export results modal ──────────────────────────────────────────────── */
+  function openExportModal(queue) {
+    const m = App.modal({
+      title: "Export results",
+      subtitle: queue.name || "—",
+      icon: "AiOutlineDownload",
+      iconTone: "emerald",
+      width: 440,
+      body: "",
+    });
+    const body = App.el('<div style="display:flex;flex-direction:column;gap:14px"></div>');
+    const fmtSel = App.select({
+      options: [
+        { label: "JSONL — one record per line", value: "jsonl" },
+        { label: "JSON — array of records", value: "json" },
+        { label: "Excel — .xlsx workbook", value: "xlsx" },
+      ],
+      value: "jsonl",
+    });
+    const scopeSel = App.select({
+      options: [{ label: "Finalised only", value: "final" }, { label: "All tasks", value: "all" }],
+      value: "final",
+    });
+    const f1 = App.el("<div>" + labelRow("Format") + "</div>");
+    f1.appendChild(fmtSel);
+    const f2 = App.el("<div>" + labelRow("Scope") + "</div>");
+    f2.appendChild(scopeSel);
+    body.appendChild(f1);
+    body.appendChild(f2);
+    body.appendChild(App.el(
+      '<p style="margin:0;font-size:12px;color:#64748b;line-height:1.55">' +
+        "Finalised exports contain the customer record for every approved task. " +
+        "<span style=\"font-weight:600;color:#475569\">All tasks</span> also includes unfinished tasks with their current majority and a <span style=\"font-family:" + MONO + "\">status</span> field." +
+        "</p>",
+    ));
+    m.setBody(body);
+    const footer = App.modalFooterButtons({
+      cancelText: "Cancel",
+      okText: "Download",
+      okTone: "emerald",
+      onCancel: () => m.close(),
+      onOk: async () => {
+        const fmt = fmtSel.value || "jsonl";
+        const scope = scopeSel.value || "final";
+        App.setLoading(footer.okBtn, true);
+        try {
+          const name = await App.download(
+            "/queues/" + encodeURIComponent(queue.id) + "/export/" + fmt + "?scope=" + encodeURIComponent(scope),
+            slug(queue.name) + "_results." + fmt,
+          );
+          App.toast.success("Exported " + name + ".");
+          m.close();
+        } catch (err) {
+          App.toast.error(err.message || "Export failed.");
+          App.setLoading(footer.okBtn, false);
+        }
+      },
+    });
+    footer.okBtn.innerHTML = App.icon("AiOutlineDownload", { size: 14 }) + "<span>Download</span>";
+    m.setFooter(footer);
+  }
+
+  /* ── Create Queue modal ────────────────────────────────────────────────── */
+  const SHEET_EXT = /\.(xlsx|csv)$/i;
+  const MAX_SHEET_BYTES = 20 * 1024 * 1024;
+
+  async function openCreateModal() {
+    const cs = {
+      projects: [],
+      projectsLoading: true,
+      projectMode: "existing",
+      submitting: false,
+      parsing: false,
+      file: null,
+      parsed: null, // {columns, detected:{input,dataset}, total_rows, skipped_rows, rows:[{dataset,input,meta_data}]}
+    };
+
+    const m = App.modal({
+      title: "New Queue",
+      subtitle: "Configure metadata and upload a prompt spreadsheet",
+      icon: "AiOutlinePlus",
+      iconTone: "blue",
+      width: 720,
+      body: "",
+    });
+    m.body.style.maxHeight = "64vh";
+    m.body.style.overflowX = "hidden";
+
+    const body = App.el('<div style="display:flex;flex-direction:column;gap:12px"></div>');
+
+    // Project.
+    const projectBlock = App.el(
+      "<div>" +
+        labelRow("Project", '<button type="button" data-role="toggle" data-hover="linkbtn" style="border:0;background:none;padding:0;cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;color:#2563eb;transition:color .15s">+ New project</button>') +
+        '<div data-role="field"></div></div>',
+    );
+    const projectField = projectBlock.querySelector('[data-role="field"]');
+    const projectToggle = projectBlock.querySelector('[data-role="toggle"]');
+    let projectSel = null;
+    const newProjectInput = App.el('<input type="text" placeholder="New project name (min 2 characters)" data-hover="fieldfocus" style="' + fieldStyle + '">');
+    function paintProjectField() {
+      projectField.innerHTML = "";
+      if (cs.projectMode === "existing") {
+        const prev = projectSel ? projectSel.value : "";
+        projectSel = App.select({
+          options: cs.projects.map((p) => ({ label: p.name, value: p.id })),
+          value: prev,
+          placeholder: cs.projectsLoading ? "Loading projects…" : "Select a project",
+          allowEmpty: true,
+        });
+        projectSel.disabled = cs.projectsLoading;
+        if (cs.projectsLoading) projectSel.style.opacity = ".7";
+        projectField.appendChild(projectSel);
+        projectToggle.textContent = "+ New project";
+      } else {
+        projectField.appendChild(newProjectInput);
+        projectToggle.textContent = "Choose existing";
+      }
+    }
+    projectToggle.addEventListener("click", () => {
+      cs.projectMode = cs.projectMode === "existing" ? "new" : "existing";
+      paintProjectField();
+    });
+    paintProjectField();
+
+    // Queue name + task name.
+    const namesGrid = App.el(
+      '<div data-grid="form2" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px">' +
+        "<div>" + labelRow("Queue Name") + '<input type="text" data-role="name" placeholder="e.g. Jailbreak prompts · Batch 12" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
+        "<div>" + labelRow("Task Name") + '<input type="text" data-role="task_name" placeholder="Optional label" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
+        "</div>",
+    );
+    const nameInput = namesGrid.querySelector('[data-role="name"]');
+    const taskNameInput = namesGrid.querySelector('[data-role="task_name"]');
+
+    // Type / Priority / SLA / Timer / Required annotators.
+    const settingsGrid = App.el(
+      '<div data-grid="form5" style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px">' +
+        "<div>" + labelRow("Type") + '<div data-role="type"></div></div>' +
+        "<div>" + labelRow("Priority") + '<div data-role="priority"></div></div>' +
+        "<div>" + labelRow("SLA (h)") + '<input type="number" min="1" max="720" step="1" value="24" data-role="sla" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
+        "<div>" + labelRow("Timer (min)") + '<input type="number" min="1" max="90000" step="1" value="120" data-role="timer" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
+        "<div>" + labelRow("Annotators") + '<div data-role="required"></div></div>' +
+        "</div>",
+    );
+    const typeSel = App.select({ options: [{ label: "Production", value: "production" }, { label: "QA", value: "qa" }], value: "production" });
+    const prioritySelC = App.select({
+      options: [{ label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }, { label: "Critical", value: "critical" }],
+      value: "medium",
+    });
+    const requiredSel = App.select({ options: [1, 2, 3, 4, 5].map((n) => ({ label: String(n), value: n })), value: 3 });
+    settingsGrid.querySelector('[data-role="type"]').appendChild(typeSel);
+    settingsGrid.querySelector('[data-role="priority"]').appendChild(prioritySelC);
+    settingsGrid.querySelector('[data-role="required"]').appendChild(requiredSel);
+    const slaInput = settingsGrid.querySelector('[data-role="sla"]');
+    const timerInput = settingsGrid.querySelector('[data-role="timer"]');
+    const qaNote = App.el(
+      '<p data-role="qanote" style="margin:-4px 0 0;display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">' +
+        App.icon("AiOutlineInfoCircle", { size: 12, color: "#7e22ce" }) +
+        '<span>A linked <span style="font-weight:600;color:#7e22ce">QA queue</span> is created automatically. Every assigned annotator reviews every prompt; a task moves to QA once the required number of annotators have submitted.</span></p>',
+    );
+    function syncTypeUi() {
+      const isQa = typeSel.value === "qa";
+      requiredSel.disabled = isQa;
+      requiredSel.style.opacity = isQa ? ".55" : "";
+      requiredSel.style.cursor = isQa ? "not-allowed" : "pointer";
+      if (isQa) requiredSel.value = "1"; else if (requiredSel.value === "1" && requiredSel.dataset.userSet !== "1") requiredSel.value = "3";
+      qaNote.style.display = isQa ? "none" : "flex";
+    }
+    requiredSel.addEventListener("change", () => { requiredSel.dataset.userSet = "1"; });
+    typeSel.addEventListener("change", syncTypeUi);
+    syncTypeUi();
+
+    // Tasks — spreadsheet upload.
+    const tasksBlock = App.el(
+      "<div>" +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px">' + LABEL("Tasks") +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span data-role="badge-rows" style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid #a7f3d0;background:#ecfdf5;color:#047857;padding:2px 8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">0 prompts</span>' +
+        '<span data-role="badge-skipped" style="display:none;align-items:center;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#64748b;padding:2px 8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">0 skipped</span>' +
+        "</div></div>" +
+        '<p style="margin:0 0 12px;font-size:11px;color:#64748b;line-height:1.5">Upload one spreadsheet — <span style="font-weight:600;color:#475569">every row becomes one task</span> (max 5000). ' +
+        "Columns: <span style=\"font-family:" + MONO + ";color:#475569\">input</span>/<span style=\"font-family:" + MONO + ";color:#475569\">prompt</span> (required), " +
+        "<span style=\"font-family:" + MONO + ";color:#475569\">task_id</span>/<span style=\"font-family:" + MONO + ";color:#475569\">dataset</span> (optional), plus any of " +
+        "<span style=\"font-family:" + MONO + ";color:#475569\">data_type, domain, role, language, source …</span></p>" +
+        '<div data-role="dropzone" data-hover="dropzone" tabindex="0" role="button" aria-label="Browse spreadsheet" style="border-radius:12px;border:1px dashed #cbd5e1;background:rgba(248,250,252,.6);text-align:center;cursor:pointer;padding:24px 16px;transition:border-color .15s, background .15s;outline:none">' +
+        '<div style="margin-bottom:8px;color:#94a3b8">' + App.icon("AiOutlineFileExcel", { size: 26 }) + "</div>" +
+        '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:4px">Browse spreadsheet</div>' +
+        '<div data-role="drop-sub" style="font-size:11px;color:#94a3b8">.xlsx or .csv · drop a file here or click to browse</div>' +
+        "</div>" +
+        '<input type="file" data-role="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" style="display:none">' +
+        '<div data-role="preview" style="margin-top:10px"></div>' +
+        "</div>",
+    );
+    const dropzone = tasksBlock.querySelector('[data-role="dropzone"]');
+    const dropSub = tasksBlock.querySelector('[data-role="drop-sub"]');
+    const fileInput = tasksBlock.querySelector('[data-role="file"]');
+    const previewHost = tasksBlock.querySelector('[data-role="preview"]');
+    const badgeRows = tasksBlock.querySelector('[data-role="badge-rows"]');
+    const badgeSkipped = tasksBlock.querySelector('[data-role="badge-skipped"]');
+
+    body.appendChild(projectBlock);
+    body.appendChild(namesGrid);
+    body.appendChild(settingsGrid);
+    body.appendChild(qaNote);
+    body.appendChild(tasksBlock);
+    m.setBody(body);
+
+    const footer = App.modalFooterButtons({
+      cancelText: "Cancel",
+      okText: "Create Queue",
+      okTone: "blue",
+      onCancel: () => m.close(),
+      onOk: () => handleCreate(),
+    });
+    m.setFooter(footer);
+
+    function rowCount() { return cs.parsed && Array.isArray(cs.parsed.rows) ? cs.parsed.rows.length : 0; }
+    function syncFooter() {
+      const n = rowCount();
+      footer.okBtn.textContent = n === 0 ? "Create Queue" : "Create · " + plural(n, "task");
+      App.setDisabled(footer.okBtn, n === 0 || cs.parsing);
+      badgeRows.textContent = plural(n, "prompt");
+      const skipped = cs.parsed ? num(cs.parsed.skipped_rows) : 0;
+      badgeSkipped.style.display = skipped > 0 ? "inline-flex" : "none";
+      badgeSkipped.textContent = skipped + " skipped";
+      dropSub.textContent = cs.file ? cs.file.name + " · " + App.fmt.bytes(cs.file.size) : ".xlsx or .csv · drop a file here or click to browse";
+    }
+
+    function renderPreview() {
+      previewHost.innerHTML = "";
+      if (cs.parsing) {
+        previewHost.innerHTML =
+          '<div style="display:flex;align-items:center;gap:8px;padding:12px 0;font-size:12px;color:#64748b">' + App.spinner(16) + "<span>Parsing spreadsheet…</span></div>";
+        return;
+      }
+      const p = cs.parsed;
+      if (!p) return;
+      const det = p.detected || {};
+      const rows = Array.isArray(p.rows) ? p.rows : [];
+      const first = rows.slice(0, 5);
+      const chip = (k, v, tone) => {
+        const t = App.TONES[tone] || App.TONES.slate;
+        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;border:1px solid ' + t.border + ";background:" + t.bg + ";color:" + t.text +
+          ';font-size:11px;white-space:nowrap"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;font-size:10px">' + esc(k) + '</span><span style="font-family:' + MONO + '">' + esc(v) + "</span></span>";
+      };
+      const columnsHtml = (p.columns || []).map((c) => App.permChip(String(c))).join(" ");
+      const card = App.el(
+        '<div style="border:1px solid #e2e8f0;border-radius:12px;background:#fff;overflow:hidden">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid #f1f5f9;background:rgba(248,250,252,.8)">' +
+          '<div style="display:flex;align-items:center;gap:8px;min-width:0">' + App.icon("AiOutlineFileExcel", { size: 14, color: "#059669" }) +
+          '<span style="font-size:13px;font-weight:600;color:#0f172a">' + esc(plural(num(p.total_rows != null ? p.total_rows : rows.length), "prompt")) + " detected</span>" +
+          '<span style="font-size:12px;color:#64748b">(' + num(p.skipped_rows) + " skipped)</span></div>" +
+          '<button type="button" data-role="clear" data-hover="btn-danger-text" style="' + BTN_BASE + 'height:26px;padding:0 8px;border-radius:6px;border:0;background:transparent;color:#64748b;font-size:12px">' +
+          App.icon("AiOutlineClose", { size: 11 }) + "<span>Remove</span></button></div>" +
+          '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+          chip("input", det.input || "—", "blue") +
+          chip("dataset", det.dataset || "auto (" + slug(nameInput.value) + "_0001 …)", det.dataset ? "purple" : "slate") +
+          "</div>" +
+          (columnsHtml ? '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;margin-right:2px">Columns</span>' + columnsHtml + "</div>" : "") +
+          '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;color:#0f172a;min-width:420px">' +
+          '<thead><tr>' +
+          '<th style="text-align:center;width:36px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">#</th>' +
+          '<th style="text-align:left;width:160px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">Dataset</th>' +
+          '<th style="text-align:left;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">Prompt</th>' +
+          "</tr></thead><tbody>" +
+          first.map((r, i) => {
+            const text = String(r.input || "").replace(/\s+/g, " ").trim();
+            const preview = text.length > 100 ? text.slice(0, 100) + "…" : text;
+            return "<tr>" +
+              '<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #f1f5f9;font-family:' + MONO + ';font-weight:600;color:#000">' + (i + 1) + "</td>" +
+              '<td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;font-family:' + MONO + ';font-size:11px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">' + esc(r.dataset || "—") + "</td>" +
+              '<td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0">' + esc(preview) + "</td>" +
+              "</tr>";
+          }).join("") +
+          (rows.length > 5 ? '<tr><td colspan="3" style="padding:6px 8px;font-size:11px;color:#94a3b8;text-align:center">… and ' + (rows.length - 5) + " more</td></tr>" : "") +
+          "</tbody></table></div></div></div>",
+      );
+      card.querySelector('[data-role="clear"]').addEventListener("click", () => {
+        cs.file = null; cs.parsed = null; fileInput.value = "";
+        renderPreview(); syncFooter();
+      });
+      previewHost.appendChild(card);
+    }
+
+    async function handleSheet(file) {
+      if (!file) return;
+      if (!SHEET_EXT.test(file.name)) { App.toast.warning(file.name + " is not a .xlsx or .csv spreadsheet."); return; }
+      if (file.size > MAX_SHEET_BYTES) { App.toast.warning("Spreadsheet is larger than 20 MB."); return; }
+      cs.file = file;
+      cs.parsed = null;
+      cs.parsing = true;
+      renderPreview(); syncFooter();
+      try {
+        const fd = new FormData();
+        fd.append("file", file, file.name);
+        fd.append("name_prefix", slug(nameInput.value));
+        const res = await App.api("/queues/parse-sheet", { method: "POST", body: fd });
+        cs.parsed = res && Array.isArray(res.rows) ? res : { columns: [], detected: {}, total_rows: 0, skipped_rows: 0, rows: [] };
+        if (!cs.parsed.rows.length) App.toast.warning("No prompt rows found in " + file.name + ".");
+        else App.toast.success(plural(cs.parsed.rows.length, "prompt") + " detected in " + file.name + ".");
+      } catch (err) {
+        cs.file = null; cs.parsed = null; fileInput.value = "";
+        App.toast.error(err.message || "Could not parse the spreadsheet.");
+      } finally {
+        cs.parsing = false;
+        renderPreview(); syncFooter();
+      }
+    }
+
+    dropzone.addEventListener("click", () => { if (!cs.parsing) fileInput.click(); });
+    dropzone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!cs.parsing) fileInput.click(); } });
+    fileInput.addEventListener("change", () => { const f = fileInput.files && fileInput.files[0]; if (f) handleSheet(f); });
+    let dragDepth = 0;
+    const setDrag = (on) => { dropzone.style.borderColor = on ? "#60a5fa" : "#cbd5e1"; dropzone.style.background = on ? "#eff6ff" : "rgba(248,250,252,.6)"; };
+    dropzone.addEventListener("dragover", (e) => e.preventDefault());
+    dropzone.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth += 1; if (!cs.parsing) setDrag(true); });
+    dropzone.addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (dragDepth === 0) setDrag(false); });
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault(); dragDepth = 0; setDrag(false);
+      if (cs.parsing) return;
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length > 1) App.toast.info("Only the first spreadsheet is used.");
+      if (files.length) handleSheet(files[0]);
+    });
+    // Datasets auto-named from the queue name: refresh the preview hint as it is typed.
+    nameInput.addEventListener("input", () => { if (cs.parsed && !(cs.parsed.detected && cs.parsed.detected.dataset)) renderPreview(); });
+
+    async function handleCreate() {
+      if (cs.submitting) return;
+      const name = nameInput.value.trim();
+      const newProjectName = newProjectInput.value.trim();
+      const sla = Number(slaInput.value);
+      const timerMin = Number(timerInput.value);
+      const required = typeSel.value === "qa" ? 1 : Number(requiredSel.value) || 3;
+      if (cs.projectMode === "existing" && !(projectSel && projectSel.value)) { App.toast.warning("Select a project for this queue."); return; }
+      if (cs.projectMode === "new" && newProjectName.length < 2) { App.toast.warning("New project name must be at least 2 characters."); return; }
+      if (name.length < 2) { App.toast.warning("Queue name must be at least 2 characters."); nameInput.focus(); return; }
+      if (!Number.isFinite(sla) || sla < 1 || sla > 720) { App.toast.warning("SLA must be between 1 and 720 hours."); slaInput.focus(); return; }
+      if (!Number.isFinite(timerMin) || timerMin < 1 || timerMin > 90000) { App.toast.warning("Timer must be between 1 and 90000 minutes."); timerInput.focus(); return; }
+      if (required < 1 || required > 5) { App.toast.warning("Required annotators must be between 1 and 5."); return; }
+      const rows = cs.parsed && Array.isArray(cs.parsed.rows) ? cs.parsed.rows : [];
+      if (!rows.length) { App.toast.warning("Upload a spreadsheet with at least one prompt."); return; }
+      if (rows.length > 5000) { App.toast.warning("Sheet has more than 5000 prompt rows."); return; }
+
+      cs.submitting = true;
+      App.setLoading(footer.okBtn, true);
+      try {
+        let projectId = projectSel ? projectSel.value : "";
+        if (cs.projectMode === "new") {
+          const project = await App.api("/projects/", { method: "POST", body: { name: newProjectName, media_type: "text", status: "active", assigned_user_ids: [] } });
+          projectId = project && project.id;
+          if (!projectId) throw new Error("Project creation failed.");
+        }
+        const autoDataset = !(cs.parsed.detected && cs.parsed.detected.dataset);
+        const prefix = slug(name);
+        const tasks = rows.map((r, i) => ({
+          dataset: autoDataset || !r.dataset ? prefix + "_" + String(i + 1).padStart(4, "0") : String(r.dataset),
+          input: String(r.input == null ? "" : r.input),
+          meta_data: r.meta_data && typeof r.meta_data === "object" ? r.meta_data : {},
+        }));
+        await App.api("/queues/", {
+          method: "POST",
+          body: {
+            name,
+            task_name: taskNameInput.value.trim(),
+            annotation_type: typeSel.value || "production",
+            priority: prioritySelC.value || "medium",
+            sla_hours: Math.round(sla),
+            timer_seconds: Math.max(60, Math.round(timerMin * 60)),
+            project_id: projectId,
+            required_annotators: required,
+            tasks,
+          },
+        });
+        App.toast.success("Queue created with " + plural(tasks.length, "task") + ".");
+        m.close();
+        state.page = 1;
+        loadData();
+      } catch (err) {
+        App.toast.error(err.message || "Unable to create queue.");
+        App.setLoading(footer.okBtn, false);
+        syncFooter();
+      } finally {
+        cs.submitting = false;
+      }
+    }
+
+    syncFooter();
+    setTimeout(() => nameInput.focus(), 50);
+
+    // Projects list.
+    try {
+      const res = await App.api("/projects/?page=1&page_size=500");
+      cs.projects = Array.isArray(res) ? res : (res && res.items) || [];
+    } catch (err) {
+      App.toast.error(err.message || "Unable to load projects.");
+    } finally {
+      cs.projectsLoading = false;
+      if (document.body.contains(m.root)) paintProjectField();
+    }
+  }
+
+  /* ── Go ────────────────────────────────────────────────────────────────── */
+  loadData();
+})();
+</script>
+</body>
+</html>

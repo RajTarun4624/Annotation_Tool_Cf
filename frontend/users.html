@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Users · Prompt Attack Annotation</title>
+<link rel="icon" href="public/favi.png">
+<style>
+  /* Only what inline styles cannot express: hover states + one responsive tweak. */
+  [data-hover=btn-emerald-soft]:hover:not(:disabled){background:#d1fae5!important}
+  [data-hover=btn-blue-soft]:hover:not(:disabled){background:#dbeafe!important}
+  [data-dz=idle]:hover{border-color:#60a5fa!important}
+  [data-hover=eye]:hover{color:#475569!important}
+  @media (max-width:640px){[data-strip]{flex-direction:column!important;align-items:stretch!important}[data-strip-actions]{align-self:flex-start}}
+</style>
+</head>
+<body style="margin:0">
+<script src="js/app.js"></script>
+<script>
+(async () => {
+  const profile = await App.ensureSession();
+  App.requirePermission("users");
+  const root = App.renderShell({ page: "users", title: "Users", subtitle: "Role-based access and account control." });
+
+  const { escapeHtml: esc, el, icon, toast } = App;
+  const T = App.tokens;
+
+  /* ── state ─────────────────────────────────────────────────────────────── */
+  const state = {
+    users: [], total: 0, page: 1, pageSize: 10,
+    searchInput: "", searchTerm: "",
+    roles: [], loading: true,
+  };
+  let rolesWarned = false;
+
+  /* ── shared style snippets (Tailwind → inline) ─────────────────────────── */
+  const SOFT_BTN =
+    "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border-radius:4px;" +
+    "font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.05);";
+  const LABEL = "font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155;";
+  const CHIP =
+    "display:inline-flex;align-items:center;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;" +
+    "text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;line-height:1.5;";
+
+  /* ── header strip ──────────────────────────────────────────────────────── */
+  const strip = el(
+    '<div data-strip style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px">' +
+      '<div data-role="search" style="width:100%;max-width:384px"></div>' +
+      '<div data-strip-actions style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
+        '<button type="button" data-role="export" data-hover="btn-emerald-soft" style="' + SOFT_BTN + 'color:#047857;border:1px solid #a7f3d0;background:#ecfdf5">' +
+          icon("AiOutlineDownload", { size: 14 }) + "<span>Export to Excel</span></button>" +
+        '<button type="button" data-role="import" data-hover="btn-blue-soft" style="' + SOFT_BTN + 'color:#1d4ed8;border:1px solid #bfdbfe;background:#eff6ff">' +
+          icon("AiOutlineUpload", { size: 14 }) + "<span>Import Users</span></button>" +
+        '<button type="button" data-role="add" data-hover="btn-primary" style="' + SOFT_BTN + 'padding:0 16px;color:#fff;border:0;background:#1d4ed8">' +
+          icon("AiOutlinePlus", { size: 14 }) + "<span>Add User</span></button>" +
+      "</div>" +
+    "</div>",
+  );
+  const search = App.searchBox({
+    placeholder: "Search users by name, email or role...",
+    width: "100%",
+    onInput: (v) => { state.searchInput = v; debouncedSearch(); },
+  });
+  strip.querySelector('[data-role="search"]').appendChild(search);
+  root.appendChild(strip);
+
+  const debouncedSearch = App.debounce(() => {
+    state.searchTerm = state.searchInput.trim();
+    state.page = 1;
+    loadData();
+  }, 300);
+
+  /* ── table panel ───────────────────────────────────────────────────────── */
+  const panel = el('<div style="' + T.GLASS + 'padding:16px;overflow:hidden"></div>');
+  const tableBox = el("<div></div>");
+  panel.appendChild(tableBox);
+  root.appendChild(panel);
+
+  const columns = [
+    {
+      title: "#", key: "index", width: 60, align: "center",
+      render: (_, i) =>
+        '<span style="font-family:' + T.MONO + ';font-size:12px;font-weight:600;color:#000">' +
+        ((state.page - 1) * state.pageSize + i + 1) + "</span>",
+    },
+    {
+      title: "User", key: "full_name",
+      render: (u) =>
+        '<div style="display:flex;align-items:center;gap:12px;padding:2px 0;min-width:0">' +
+          '<div style="display:flex;height:32px;width:32px;flex-shrink:0;align-items:center;justify-content:center;border-radius:50%;background:#f1f5f9;font-size:12px;font-weight:600;color:#475569;text-transform:uppercase">' +
+            esc((u.full_name || u.email || "?").charAt(0)) + "</div>" +
+          '<div style="min-width:0">' +
+            '<span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.full_name || "—") + "</span>" +
+            '<span style="display:block;font-size:12px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.email) + "</span>" +
+          "</div></div>",
+    },
+    {
+      title: "Role", key: "role_name", width: 180,
+      render: (u) =>
+        '<div style="min-width:0">' +
+        (u.role_name ? App.pill(u.role_name, "blue") : '<span style="font-size:12px;color:#94a3b8">—</span>') +
+        "</div>",
+    },
+    {
+      title: "Permissions", key: "permissions",
+      render: (u) => {
+        const items = u.permissions || [];
+        if (!items.length) return '<span style="font-size:12px;color:#94a3b8">None</span>';
+        const visible = items.slice(0, 4);
+        const overflow = items.length - visible.length;
+        return (
+          '<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:360px">' +
+          visible.map((p) => App.permChip(p)).join("") +
+          (overflow > 0
+            ? '<span data-tip="' + esc(items.slice(4).join(", ")) + '" style="' + CHIP + 'border:1px solid #e2e8f0;background:#fff;color:#64748b">+' + overflow + " more</span>"
+            : "") +
+          "</div>"
+        );
+      },
+    },
+    {
+      title: "Status", key: "is_active", width: 150,
+      render: (u) => {
+        const wrap = el('<div style="display:flex;align-items:center;gap:8px"></div>');
+        wrap.insertAdjacentHTML("afterbegin", App.pill(u.is_active ? "Active" : "Inactive", u.is_active ? "emerald" : "slate", { dot: true }));
+        wrap.appendChild(App.switchEl({
+          checked: !!u.is_active, small: true,
+          onChange: () => handleToggleStatus(u),
+        }));
+        return wrap;
+      },
+    },
+    {
+      title: "Actions", key: "actions", width: 80, align: "center",
+      render: (u) => {
+        const btn = el(
+          '<button type="button" data-tip="Edit user" data-hover="btn-text" style="display:inline-flex;align-items:center;justify-content:center;height:32px;width:32px;padding:0;border-radius:4px;border:0;background:transparent;color:#000;cursor:pointer;transition:.15s">' +
+            icon("AiOutlineEdit", { size: 16 }) + "</button>",
+        );
+        btn.addEventListener("click", () => openEdit(u));
+        return btn;
+      },
+    },
+  ];
+
+  function renderTable() {
+    App.table(tableBox, {
+      columns, rows: state.users, rowKey: "id", loading: state.loading,
+      emptyText: "No users found",
+      pagination: {
+        page: state.page, pageSize: state.pageSize, total: state.total,
+        showSizeChanger: true, pageSizeOptions: [10, 25, 50, 100],
+        onChange: (p, s) => {
+          state.page = p;
+          if (s !== state.pageSize) state.pageSize = s;
+          loadData();
+        },
+      },
+    });
+  }
+
+  /* ── data ──────────────────────────────────────────────────────────────── */
+  function usersQuery() {
+    const params = new URLSearchParams();
+    if (state.searchTerm) params.set("search", state.searchTerm);
+    params.set("page", String(state.page));
+    params.set("page_size", String(state.pageSize));
+    return "/users/?" + params.toString();
+  }
+
+  async function loadData() {
+    state.loading = true;
+    renderTable();
+    try {
+      const [usersResp, rolesResp] = await Promise.all([
+        App.api(usersQuery()),
+        App.api("/roles/").catch((e) => { if (!rolesWarned) { rolesWarned = true; toast.error(e.message || "Unable to load roles."); } return null; }),
+      ]);
+      const items = Array.isArray(usersResp) ? usersResp : (usersResp && usersResp.items) || [];
+      const total = Array.isArray(usersResp) ? usersResp.length : usersResp && usersResp.total != null ? usersResp.total : items.length;
+      state.users = items;
+      state.total = total;
+      if (rolesResp) {
+        const roleList = Array.isArray(rolesResp) ? rolesResp : (rolesResp.items || []);
+        state.roles = roleList.filter((r) => r.is_active);
+      }
+    } catch (err) {
+      toast.error(err.message || "Unable to load users.");
+    } finally {
+      state.loading = false;
+      renderTable();
+    }
+  }
+
+  /* ── export / status ───────────────────────────────────────────────────── */
+  const exportBtn = strip.querySelector('[data-role="export"]');
+  exportBtn.addEventListener("click", async () => {
+    App.setLoading(exportBtn, true);
+    try {
+      const params = new URLSearchParams();
+      if (state.searchTerm) params.set("search", state.searchTerm);
+      const q = params.toString();
+      await App.download("/users/export" + (q ? "?" + q : ""), "users-" + Date.now() + ".xlsx");
+      toast.success("Exported user list to Excel.");
+    } catch (err) {
+      toast.error(err.message || "Unable to export users.");
+    } finally {
+      App.setLoading(exportBtn, false);
+    }
+  });
+
+  async function handleToggleStatus(user) {
+    const verb = user.is_active ? "Deactivate" : "Activate";
+    const ok = await App.confirm({
+      title: verb + " user",
+      content: "Do you want to " + verb.toLowerCase() + " " + (user.full_name || user.email) + "?",
+      okText: "Confirm",
+    });
+    if (!ok) return false;
+    try {
+      await App.api("/users/" + encodeURIComponent(user.id) + "/status", { method: "PATCH", body: { is_active: !user.is_active } });
+      toast.success("User status updated.");
+      loadData();
+      return true;
+    } catch (err) {
+      toast.error(err.message || "Unable to update user status.");
+      return false;
+    }
+  }
+
+  /* ── form helpers ──────────────────────────────────────────────────────── */
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  function fieldWrap(labelText, control, opts) {
+    const o = opts || {};
+    const wrap = el(
+      '<div style="margin-bottom:' + (o.mb == null ? 0 : o.mb) + 'px">' +
+        '<div style="' + LABEL + 'margin-bottom:8px">' + esc(labelText) + "</div>" +
+        '<div data-role="control"></div>' +
+        (o.extra ? '<div style="font-size:11px;color:#64748b;margin-top:4px">' + esc(o.extra) + "</div>" : "") +
+        '<div data-role="error" style="display:none;font-size:12.5px;color:#ff4d4f;margin-top:4px;line-height:1.4"></div>' +
+      "</div>",
+    );
+    wrap.querySelector('[data-role="control"]').appendChild(control);
+    const errEl = wrap.querySelector('[data-role="error"]');
+    const target = o.borderTarget || control;
+    wrap.setError = (msg) => {
+      if (msg) {
+        errEl.textContent = msg;
+        errEl.style.display = "block";
+        target.style.borderColor = "#ff4d4f";
+      } else {
+        errEl.style.display = "none";
+        target.style.borderColor = "#cbd5e1";
+      }
+    };
+    return wrap;
+  }
+
+  function textInput(placeholder, type) {
+    const input = el('<input type="' + (type || "text") + '" data-hover="fieldfocus" style="' + T.INPUT_STYLE + '">');
+    input.placeholder = placeholder || "";
+    return input;
+  }
+
+  function passwordInput(placeholder) {
+    const wrap = el(
+      '<div style="position:relative">' +
+        '<input type="password" data-hover="fieldfocus" autocomplete="new-password" style="' + T.INPUT_STYLE + 'padding-right:36px">' +
+        '<button type="button" data-hover="eye" aria-label="Toggle password visibility" style="position:absolute;top:0;right:0;height:36px;width:36px;display:inline-flex;align-items:center;justify-content:center;border:0;background:none;padding:0;cursor:pointer;color:#94a3b8;transition:color .15s">' +
+          icon("AiOutlineEyeInvisible", { size: 15 }) + "</button>" +
+      "</div>",
+    );
+    const input = wrap.querySelector("input");
+    const eye = wrap.querySelector("button");
+    input.placeholder = placeholder || "";
+    eye.addEventListener("click", () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      eye.innerHTML = icon(show ? "AiOutlineEye" : "AiOutlineEyeInvisible", { size: 15 });
+      input.focus();
+    });
+    wrap.input = input;
+    return wrap;
+  }
+
+  /* ── Add / Edit modal (width 540) ──────────────────────────────────────── */
+  function openCreate() { openUserModal(null); }
+  function openEdit(user) { openUserModal(user); }
+
+  function openUserModal(editingUser) {
+    const isEdit = !!editingUser;
+
+    const fullName = textInput("Jane Smith");
+    const email = textInput("jane@example.com");
+    const password = passwordInput(isEdit ? "•••••••• (unchanged)" : "At least 8 characters");
+    const roleSel = App.select({
+      placeholder: "Select role",
+      options: state.roles.map((r) => ({ label: r.name, value: r.id })),
+      value: isEdit ? editingUser.role_id || "" : "",
+    });
+    const statusSwitch = App.switchEl({ checked: isEdit ? !!editingUser.is_active : true });
+
+    if (isEdit) {
+      fullName.value = editingUser.full_name || "";
+      email.value = editingUser.email || "";
+    }
+
+    const fName = fieldWrap("Full Name", fullName, { mb: 8 });
+    const fEmail = fieldWrap("Email", email, { mb: 0 });
+    const fPassword = fieldWrap(isEdit ? "New Password (optional)" : "Password", password, {
+      mb: 4, borderTarget: password.input,
+      extra: isEdit ? "Leave blank to keep the existing password." : null,
+    });
+    const fRole = fieldWrap("Assigned Role", roleSel, { mb: 0 });
+
+    [fullName, email, password.input].forEach((inp, i) => {
+      inp.addEventListener("input", () => [fName, fEmail, fPassword][i].setError(""));
+    });
+    roleSel.addEventListener("change", () => fRole.setError(""));
+
+    const body = el('<div></div>');
+    const section = (label) => {
+      const s = el('<div style="margin-bottom:16px"><div style="' + LABEL + 'margin-bottom:8px">' + esc(label) + "</div></div>");
+      return s;
+    };
+    const sIdentity = section("Identity");
+    sIdentity.appendChild(fName); sIdentity.appendChild(fEmail);
+    const sSecurity = section("Security");
+    sSecurity.appendChild(fPassword);
+    const sAccess = section("Access");
+    sAccess.appendChild(fRole);
+    const sStatus = section("Status");
+    sStatus.style.marginBottom = "0";
+    const statusBox = el(
+      '<div style="display:flex;align-items:center;gap:12px;border-radius:8px;border:1px solid #e2e8f0;background:rgba(248,250,252,0.5);padding:8px 12px">' +
+        '<span style="font-size:12px;color:#334155">Active users can sign in and access their assigned modules.</span></div>',
+    );
+    statusBox.insertBefore(statusSwitch, statusBox.firstChild);
+    sStatus.appendChild(statusBox);
+    body.appendChild(sIdentity); body.appendChild(sSecurity); body.appendChild(sAccess); body.appendChild(sStatus);
+
+    const m = App.modal({
+      title: isEdit ? "Edit User" : "Add User",
+      subtitle: isEdit ? (editingUser.email || "Update account details") : "Create an account and grant role-based access",
+      icon: isEdit ? "AiOutlineEdit" : "AiOutlinePlus",
+      iconTone: isEdit ? "amber" : "blue",
+      width: 540,
+      body,
+    });
+    m.body.style.overflowX = "hidden";
+
+    const validate = () => {
+      let ok = true;
+      const name = fullName.value.trim();
+      if (name.length < 2) { fName.setError("Required"); ok = false; }
+      const mail = email.value.trim();
+      if (!mail || !EMAIL_RE.test(mail)) { fEmail.setError("Valid email required"); ok = false; }
+      const pw = password.input.value;
+      if (!isEdit && pw.length < 8) { fPassword.setError("Min 8 characters"); ok = false; }
+      if (isEdit && pw && pw.length < 8) { fPassword.setError("Min 8 characters"); ok = false; }
+      if (!roleSel.value) { fRole.setError("Required"); ok = false; }
+      return ok;
+    };
+
+    const buttons = App.modalFooterButtons({
+      cancelText: "Cancel", okText: "Submit", okTone: "blue",
+      onCancel: () => m.close(),
+      onOk: async () => {
+        if (!validate()) return;
+        App.setLoading(buttons.okBtn, true);
+        try {
+          const values = {
+            full_name: fullName.value.trim(),
+            email: email.value.trim(),
+            password: password.input.value,
+            role_id: roleSel.value,
+            is_active: !!statusSwitch.checked,
+          };
+          if (isEdit) {
+            await App.api("/users/" + encodeURIComponent(editingUser.id), {
+              method: "PUT", body: Object.assign({}, values, { password: values.password || undefined }),
+            });
+            toast.success("User updated.");
+          } else {
+            await App.api("/users/", { method: "POST", body: values });
+            toast.success("User created.");
+          }
+          m.close();
+          loadData();
+        } catch (err) {
+          toast.error(err.message || "Unable to save user.");
+        } finally {
+          App.setLoading(buttons.okBtn, false);
+        }
+      },
+    });
+    m.setFooter(buttons);
+    setTimeout(() => fullName.focus(), 50);
+  }
+
+  /* ── Import Users modal (width 500) ────────────────────────────────────── */
+  function openImportModal() {
+    let importFile = null;
+    let importResult = null;
+
+    const body = el('<div style="display:flex;flex-direction:column;gap:16px"></div>');
+
+    const instructions = el(
+      '<div style="font-size:12px;color:#475569;line-height:1.625;background:#f8fafc;border:1px solid #f1f5f9;border-radius:8px;padding:12px">' +
+        '<span style="font-weight:600;color:#1e293b">Instructions:</span>' +
+        '<ul style="list-style:disc;padding-left:16px;margin:4px 0 0;display:flex;flex-direction:column;gap:4px">' +
+          "<li>Upload a <strong>.csv</strong> or <strong>.xlsx</strong> (Excel) file.</li>" +
+          '<li>Required headers: <code style="font-family:' + T.MONO + '">Full Name</code>, <code style="font-family:' + T.MONO + '">Email</code>, <code style="font-family:' + T.MONO + '">Password</code>, <code style="font-family:' + T.MONO + '">Role</code>.</li>' +
+          "<li>Roles must match existing system roles case-insensitively.</li>" +
+          "<li>Passwords must be at least 8 characters long.</li>" +
+        "</ul>" +
+        '<div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid rgba(226,232,240,0.6);padding-top:8px">' +
+          '<span style="color:#64748b">Need a starting point?</span>' +
+          '<button type="button" data-role="template" data-hover="link" style="display:inline-flex;align-items:center;gap:6px;padding:0;height:auto;border:0;background:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;color:#1d4ed8">' +
+            icon("AiOutlineDownload", { size: 12 }) + "<span>Download Template</span></button>" +
+        "</div>" +
+      "</div>",
+    );
+    body.appendChild(instructions);
+
+    const stage = el("<div></div>");
+    body.appendChild(stage);
+
+    const fileInput = el('<input type="file" accept=".csv,.xlsx" style="display:none">');
+    body.appendChild(fileInput);
+
+    const m = App.modal({
+      title: "Import Users",
+      subtitle: "Upload CSV or Excel file to add users in bulk",
+      icon: "AiOutlineUpload",
+      iconTone: "emerald",
+      width: 500,
+      body,
+      onClose: () => { importFile = null; importResult = null; },
+    });
+    m.body.style.maxHeight = "60vh";
+
+    const closeBtn = el(
+      '<button type="button" data-hover="btn-cancel" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;color:#475569;border:1px solid #e2e8f0;background:#fff">Close</button>',
+    );
+    const importBtn = el(
+      '<button type="button" data-hover="btn-emerald" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;font-weight:500;color:#fff;border:0;background:#059669">Import</button>',
+    );
+    closeBtn.addEventListener("click", () => m.close());
+    const footer = el('<div style="display:flex;justify-content:flex-end;gap:8px"></div>');
+    footer.appendChild(closeBtn);
+    footer.appendChild(importBtn);
+    m.setFooter(footer);
+
+    const setFile = (f) => {
+      if (!f) return;
+      importFile = f;
+      renderStage();
+    };
+    fileInput.addEventListener("change", () => { if (fileInput.files && fileInput.files[0]) setFile(fileInput.files[0]); fileInput.value = ""; });
+
+    function renderDropZone() {
+      const hasFile = !!importFile;
+      const zone = el(
+        '<div data-dz="' + (hasFile ? "file" : "idle") + '" style="border:2px dashed ' + (hasFile ? "#34d399" : "#cbd5e1") + ";border-radius:12px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;transition:border-color .15s, background .15s;background:" +
+          (hasFile ? "rgba(236,253,245,0.2)" : "rgba(248,250,252,0.3)") + '">' +
+          icon("AiOutlineUpload", { size: 30, color: hasFile ? "#10b981" : "#94a3b8", style: "margin-bottom:8px" }) +
+          '<div style="font-size:14px;font-weight:600;color:#1e293b;text-align:center;word-break:break-all">' + esc(hasFile ? importFile.name : "Click to select or drag file here") + "</div>" +
+          '<div style="font-size:12px;color:#94a3b8;margin-top:4px">Supports .csv, .xlsx</div>' +
+          (hasFile ? '<div style="font-size:12px;color:#64748b;margin-top:8px;font-family:' + T.MONO + '">' + (importFile.size / 1024).toFixed(1) + " KB</div>" : "") +
+        "</div>",
+      );
+      zone.addEventListener("click", () => fileInput.click());
+      zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.style.borderColor = "#1d4ed8"; zone.style.background = "#eff6ff"; });
+      zone.addEventListener("dragleave", () => { zone.style.borderColor = hasFile ? "#34d399" : "#cbd5e1"; zone.style.background = hasFile ? "rgba(236,253,245,0.2)" : "rgba(248,250,252,0.3)"; });
+      zone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!f) return;
+        if (!/\.(csv|xlsx)$/i.test(f.name)) { toast.error("Unsupported file format. Please upload a .csv or .xlsx file."); renderStage(); return; }
+        setFile(f);
+      });
+      return zone;
+    }
+
+    function renderResult() {
+      const errors = (importResult && importResult.errors) || [];
+      const hasErrors = errors.length > 0;
+      const wrap = el('<div style="display:flex;flex-direction:column;gap:12px"></div>');
+      wrap.appendChild(el(
+        '<div style="padding:16px;border-radius:12px;display:flex;align-items:flex-start;gap:12px;border:1px solid ' + (hasErrors ? "#fde68a" : "#a7f3d0") +
+          ";background:" + (hasErrors ? "rgba(255,251,235,0.5)" : "rgba(236,253,245,0.5)") + ";color:" + (hasErrors ? "#92400e" : "#065f46") + '">' +
+          '<div style="font-size:24px;line-height:1;margin-top:2px">' + (hasErrors ? "⚠️" : "✅") + "</div>" +
+          "<div>" +
+            '<div style="font-weight:600;font-size:14px">Import Completed</div>' +
+            '<div style="font-size:12px;margin-top:4px;color:#334155">Successfully imported <strong>' + esc(importResult.imported_count) + "</strong> users.</div>" +
+          "</div></div>",
+      ));
+      if (hasErrors) {
+        wrap.appendChild(el(
+          '<div style="display:flex;flex-direction:column;gap:6px">' +
+            '<div style="font-size:12px;font-weight:600;color:#334155;text-transform:uppercase;letter-spacing:.05em">Skipped/Failed Rows (' + errors.length + ")</div>" +
+            '<div style="max-height:180px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:8px;padding:10px;background:#f8fafc;display:flex;flex-direction:column;gap:4px">' +
+              errors.map((e) =>
+                '<div style="font-size:12px;color:#e11d48;font-family:' + T.MONO + ';display:flex;align-items:flex-start;gap:4px">' +
+                '<span style="color:#fb7185">•</span><span>' + esc(e) + "</span></div>").join("") +
+            "</div>" +
+          "</div>",
+        ));
+      }
+      return wrap;
+    }
+
+    function renderStage() {
+      App.fill(stage, importResult ? renderResult() : renderDropZone());
+      importBtn.style.display = importResult ? "none" : "inline-flex";
+      App.setDisabled(importBtn, !importFile);
+    }
+    renderStage();
+
+    instructions.querySelector('[data-role="template"]').addEventListener("click", async () => {
+      try {
+        await App.download("/users/import-template", "users-import-template.xlsx");
+        toast.success("Template downloaded successfully.");
+      } catch (err) {
+        toast.error(err.message || "Unable to download template.");
+      }
+    });
+
+    importBtn.addEventListener("click", async () => {
+      if (!importFile) return;
+      App.setLoading(importBtn, true);
+      try {
+        const fd = new FormData();
+        fd.append("file", importFile, importFile.name);
+        const res = await App.api("/users/import", { method: "POST", body: fd });
+        importResult = { imported_count: (res && res.imported_count) || 0, errors: (res && res.errors) || [] };
+        toast.success("Import completed: " + importResult.imported_count + " users created.");
+        renderStage();
+        loadData();
+      } catch (err) {
+        toast.error(err.message || "Bulk import failed.");
+      } finally {
+        App.setLoading(importBtn, false);
+      }
+    });
+  }
+
+  /* ── wiring ────────────────────────────────────────────────────────────── */
+  strip.querySelector('[data-role="add"]').addEventListener("click", openCreate);
+  strip.querySelector('[data-role="import"]').addEventListener("click", openImportModal);
+
+  loadData();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+# Claude workflow trees
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+build/
+.npm
+.eslintcache
+
+# Logs
+*.log
+backend.log
+backend.err.log
+frontend.log
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Uploads / runtime data
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Machine-specific compose port overrides
+docker-compose.override.yml
