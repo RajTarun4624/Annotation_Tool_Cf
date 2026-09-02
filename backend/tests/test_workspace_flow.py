@@ -554,6 +554,34 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         assert console[0]["required_annotators"] == 3
         assert console[0]["finalized_by_name"]
 
+        # ---- single task export ------------------------------------------
+        response = client.get(_api(f"/tasks/{t1}/export?fmt=json"), headers=headers)
+        assert response.status_code == 200, response.text
+        assert isinstance(response.json(), list)
+        assert response.json()[0]["dataset"] == f"flow_{suffix}_0001"
+
+        response = client.get(_api(f"/tasks/{t1}/export?fmt=xlsx"), headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith(XLSX_MIME)
+
+        # ---- workspace skip / release / decline ---------------------------
+        skip_res = client.post(_api(f"/workspace/tasks/{t2}/skip"), headers=ah)
+        assert skip_res.status_code == 200, skip_res.text
+        assert skip_res.json()["success"] is True
+
+        rel_res = client.post(_api(f"/workspace/tasks/{t2}/release"), headers=ah)
+        assert rel_res.status_code == 200, rel_res.text
+        assert rel_res.json()["success"] is True
+
+        dec_res = client.post(
+            _api(f"/workspace/tasks/{t3}/decline"),
+            headers=ah,
+            json={"reason": "Corrupted text"},
+        )
+        assert dec_res.status_code == 200, dec_res.text
+        assert dec_res.json()["success"] is True
+
+
     finally:
         if queue_id:
             client.delete(_api(f"/queues/{queue_id}"), headers=headers)

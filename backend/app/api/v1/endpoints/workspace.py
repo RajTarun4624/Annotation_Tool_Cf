@@ -36,6 +36,11 @@ class SubmitRequest(DraftRequest):
     pass
 
 
+class DeclineRequest(BaseModel):
+    reason: str = ""
+
+
+
 class PreviewRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
@@ -182,6 +187,58 @@ def submit_task(
         db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
     )
     return result
+
+
+@router.post("/tasks/{task_id}/decline")
+def decline_workspace_task(
+    task_id: str,
+    payload: DeclineRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    task = _load_task_or_404(db, task_id)
+    _require_production_task_access(db, task, current_user)
+    crud.decline_task(db, task, current_user, payload.reason)
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
+
+@router.post("/tasks/{task_id}/release")
+def release_workspace_task(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    task = _load_task_or_404(db, task_id)
+    _require_production_task_access(db, task, current_user)
+    crud.release_task(db, task, current_user)
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
+
+@router.post("/tasks/{task_id}/skip")
+def skip_workspace_task(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    task = _load_task_or_404(db, task_id)
+    _require_production_task_access(db, task, current_user)
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
 
 
 # ─── QA workspace ──────────────────────────────────────────────────────────

@@ -393,6 +393,54 @@ def upsert_draft(
     return ann
 
 
+def decline_task(
+    db: Session,
+    task: Task,
+    user: dict[str, Any],
+    reason: str = "",
+) -> TaskAnnotation:
+    """Mark the caller's annotation as declined with a reason."""
+    now = _now()
+    uid = _parse_uuid(user["id"])
+    ann = get_my_annotation(task, user["id"])
+    if ann is None:
+        ann = TaskAnnotation(
+            id=uuid.uuid4(),
+            task_id=task.id,
+            user_id=uid,
+            user_name=user.get("full_name") or "",
+            status="declined",
+            data={"declined": True, "reason": reason},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(ann)
+        task.annotations.append(ann)
+    else:
+        ann.status = "declined"
+        ann.user_name = user.get("full_name") or ann.user_name
+        ann.data = {"declined": True, "reason": reason}
+        ann.updated_at = now
+
+    task.declined_reason = reason or task.declined_reason
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+    return ann
+
+
+def release_task(db: Session, task: Task, user: dict[str, Any]) -> None:
+    """Release/delete the caller's in-progress draft on this task."""
+    now = _now()
+    ann = get_my_annotation(task, user["id"])
+    if ann is not None and ann.status == "draft":
+        db.delete(ann)
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+
+
+
 def ensure_qa_queue(db: Session, prod: Queue, created_by: uuid.UUID | None = None) -> Queue:
     """Return the production queue's linked QA queue, creating it lazily when
     it is missing (e.g. queues created before the QA link existed). Does NOT

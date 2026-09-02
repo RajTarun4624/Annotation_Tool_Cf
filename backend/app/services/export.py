@@ -344,3 +344,38 @@ def export_queue(db: Session, queue: Queue, fmt: str, scope: str = "final") -> t
             export_filename(queue, "xlsx"),
         )
     raise ValueError(f"Unsupported export format: {fmt}")
+
+
+def export_single_task(db: Session, task: Task, fmt: str = "json") -> tuple[bytes, str, str]:
+    """Return (body, media_type, filename) for a single task export."""
+    annotations = _submitted_annotations(task)
+    if task.status == "approved" and task.final_record:
+        record = _stored_record(task, annotations)
+    elif task.status == "approved" and task.final_data:
+        record = build_record(task, annotations, task.final_data)
+    else:
+        record = _record_for(task, annotations)
+    record["status"] = task.status or "pending"
+
+    row = {"task": task, "record": record, "annotations": annotations}
+    prod = task.queue
+    if prod is None and task.queue_id:
+        prod = db.query(Queue).filter(Queue.id == task.queue_id).first()
+    required = int(prod.required_annotators or 3) if prod else 3
+
+    task_slug = slugify(task.dataset or str(task.id)[:8])
+    filename = f"task_{task_slug}.{fmt}"
+
+    if fmt == "jsonl":
+        return to_jsonl([record]), "application/x-ndjson", filename
+    if fmt == "json":
+        return to_json([record]), "application/json", filename
+    if fmt == "xlsx":
+        body = to_xlsx([row], required)
+        return (
+            body,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename,
+        )
+    raise ValueError(f"Unsupported export format: {fmt}")
+

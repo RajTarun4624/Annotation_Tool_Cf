@@ -243,12 +243,12 @@
           '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>",
       },
       {
-        title: "Queue", key: "name", width: 180, ellipsis: true,
+        title: "Queue", key: "name", width: 220, ellipsis: true,
         render: (r) =>
           '<span title="' + esc(r.name) + '" style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>",
       },
-      { title: "Progress", key: "_progress", width: 220, render: renderProgress },
     ];
+
     if (isProduction()) cols.push({ title: "Annotators", key: "_annotators", width: 110, render: renderAnnotators });
     cols.push(
       { title: "Timer / Task", key: "timer_seconds", width: 130, render: (r) => renderTimer(r.timer_seconds) },

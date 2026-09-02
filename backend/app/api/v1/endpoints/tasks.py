@@ -2,11 +2,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.models.task import Task
 from app.schemas.pagination import Page
+from app.services.export import export_single_task
 from app.services.task_service import TaskService
 
 router = APIRouter()
@@ -133,3 +135,40 @@ def reinject_task(
             detail="Task not found or unable to reinject.",
         )
     return {"success": True, "message": "Task reinjected successfully."}
+
+
+@router.get("/{task_id}/export")
+def export_single_task_endpoint(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    fmt: str = Query(default="json"),
+) -> Response:
+    _require_console_access(current_user, "Insufficient permissions to export tasks.")
+
+    task = (
+        db.query(Task)
+        .options(selectinload(Task.annotations), selectinload(Task.queue))
+        .filter(Task.id == task_id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found.",
+        )
+
+    fmt = (fmt or "json").lower()
+    if fmt not in ("json", "jsonl", "xlsx"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Format must be one of: json, jsonl, xlsx",
+        )
+
+    body, media_type, filename = export_single_task(db, task, fmt)
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+

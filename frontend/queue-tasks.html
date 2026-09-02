@@ -440,9 +440,9 @@
         render: (r) => '<span style="font-size:12px;color:#475569;white-space:nowrap">' + esc(App.fmt.dateTime(r.updated_at)) + "</span>",
       },
       {
-        title: "Actions", key: "actions", width: 150, align: "right",
+        title: "Actions", key: "actions", width: 220, align: "right",
         render: (r) => {
-          const wrap = App.el('<div style="display:flex;justify-content:flex-end;gap:6px"></div>');
+          const wrap = App.el('<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px"></div>');
           if (String(r.status || "").toLowerCase() === "approved") {
             const reopen = App.el('<button type="button" data-tip="Reopen this finalised task for QA re-evaluation" data-hover="btn-default" style="' + BTN_SM + '">' + App.icon("AiOutlineUndo", { size: 12 }) + "<span>Reopen</span></button>");
             reopen.addEventListener("click", (e) => { e.stopPropagation(); reopenTask(r, reopen); });
@@ -451,10 +451,16 @@
           const view = App.el('<button type="button" data-tip="View prompt, annotations and final record" data-hover="btn-default" style="' + BTN_SM + '">' + App.icon("AiOutlineEye", { size: 12 }) + "<span>View</span></button>");
           view.addEventListener("click", (e) => { e.stopPropagation(); openView(r); });
           wrap.appendChild(view);
+
+          const dl = App.el('<button type="button" data-tip="Download task record (JSON / Excel)" data-hover="btn-default" style="' + BTN_SM + '">' + App.icon("AiOutlineDownload", { size: 12 }) + "<span>Download</span></button>");
+          dl.addEventListener("click", (e) => { e.stopPropagation(); openDownloadMenu(r, dl); });
+          wrap.appendChild(dl);
+
           return wrap;
         },
       },
     ];
+
 
     App.table(tableBox, {
       columns,
@@ -689,11 +695,89 @@
       m.setBody(renderTaskFallback(row, err));
     }
     const status = String((detail && detail.task && detail.task.status) || row.status || "").toLowerCase();
+    const dlModal = App.el('<button type="button" data-tip="Download task record as JSON" data-hover="btn-default" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;color:#334155;border:1px solid #cbd5e1;background:#fff;transition:.15s">' + App.icon("AiOutlineDownload", { size: 14 }) + "<span>Download JSON</span></button>");
+    dlModal.addEventListener("click", async () => {
+      App.setLoading(dlModal, true);
+      try {
+        await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=json", "task_" + (row.dataset || row.id) + ".json");
+        App.toast.success("Task record downloaded.");
+      } catch (err) {
+        App.toast.error(err.message || "Download failed.");
+      } finally {
+        App.setLoading(dlModal, false);
+      }
+    });
+    footer.insertBefore(dlModal, closeBtn);
+
     if (status === "approved") {
       const reopen = App.el('<button type="button" data-hover="btn-modal-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:8px;font-size:14px;font-weight:500;font-family:inherit;cursor:pointer;color:#fff;border:0;background:#2563eb;transition:.15s">' + App.icon("AiOutlineUndo", { size: 14 }) + "<span>Reopen</span></button>");
       reopen.addEventListener("click", () => { m.close(); reopenTask(row, null); });
-      footer.insertBefore(reopen, closeBtn);
+      footer.insertBefore(reopen, dlModal);
     }
+  }
+
+  function openDownloadMenu(row, anchor) {
+    const pop = App.el(
+      '<div role="menu" style="position:fixed;z-index:1060;background:#fff;border:1px solid #e2e8f0;border-radius:8px;' +
+        "box-shadow:0 12px 32px rgba(15,23,42,.16);padding:4px;font-family:" + FONT + ';font-size:13px;color:#0f172a;min-width:165px;box-sizing:border-box">' +
+        '<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;padding:4px 8px">Download Task</div>' +
+        '<button type="button" data-fmt="json" data-hover="filter-row" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:0;background:transparent;border-radius:4px;font-size:13px;font-family:inherit;color:#334155;cursor:pointer;text-align:left">' +
+        App.icon("AiOutlineFileText", { size: 14, color: "#2563eb" }) + "<span>JSON (.json)</span></button>" +
+        '<button type="button" data-fmt="xlsx" data-hover="filter-row" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:0;background:transparent;border-radius:4px;font-size:13px;font-family:inherit;color:#334155;cursor:pointer;text-align:left">' +
+        App.icon("AiOutlineFileExcel", { size: 14, color: "#16a34a" }) + "<span>Excel (.xlsx)</span></button>" +
+        '<button type="button" data-fmt="jsonl" data-hover="filter-row" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:0;background:transparent;border-radius:4px;font-size:13px;font-family:inherit;color:#334155;cursor:pointer;text-align:left">' +
+        App.icon("AiOutlineCode", { size: 14, color: "#9333ea" }) + "<span>JSON Lines (.jsonl)</span></button>" +
+        "</div>",
+    );
+    document.body.appendChild(pop);
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      const h = pop.offsetHeight;
+      let left = r.right - w;
+      let top = r.bottom + 4;
+      if (left < 8) left = 8;
+      if (top + h > window.innerHeight - 8 && r.top - h - 4 >= 0) top = r.top - h - 4;
+      pop.style.left = left + "px";
+      pop.style.top = top + "px";
+    };
+    place();
+
+    let done = false;
+    const close = () => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      pop.remove();
+    };
+    const onOutside = (e) => { if (pop.contains(e.target) || anchor.contains(e.target)) return; close(); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+
+    pop.querySelectorAll("button[data-fmt]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const fmt = b.dataset.fmt;
+        close();
+        App.setLoading(anchor, true);
+        try {
+          await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=" + fmt, "task_" + (row.dataset || row.id) + "." + fmt);
+          App.toast.success("Task exported (" + fmt.toUpperCase() + ").");
+        } catch (err) {
+          App.toast.error(err.message || "Export failed.");
+        } finally {
+          App.setLoading(anchor, false);
+        }
+      });
+    });
+
+    setTimeout(() => {
+      document.addEventListener("mousedown", onOutside, true);
+      document.addEventListener("keydown", onKey, true);
+      window.addEventListener("scroll", place, true);
+      window.addEventListener("resize", place);
+    }, 0);
   }
 
   await load(1, 10);
@@ -701,3 +785,4 @@
 </script>
 </body>
 </html>
+
