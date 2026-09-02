@@ -435,8 +435,12 @@
     function paintChips() {
       const selected = new Set(state.attack_type);
       App.qsa("[data-chip]", refs.chips).forEach((btn) => {
+        const isBen = btn.dataset.chip === BENIGN;
         const on = selected.has(btn.dataset.chip);
-        btn.setAttribute("style", CHIP_BASE + (on ? CHIP_ON : CHIP_OFF) + (readOnly ? "cursor:default;" : "cursor:pointer;"));
+        const styleOn = isBen
+          ? "border:1px solid #059669;background:#ecfdf5;color:#047857;"
+          : "border:1px solid #2563eb;background:#eff6ff;color:#1d4ed8;";
+        btn.setAttribute("style", CHIP_BASE + (on ? styleOn : CHIP_OFF) + (readOnly ? "cursor:default;" : "cursor:pointer;"));
         btn.setAttribute("aria-pressed", on ? "true" : "false");
         const check = btn.querySelector("[data-check]");
         if (check) check.style.display = on ? "inline-flex" : "none";
@@ -449,7 +453,17 @@
       if (has) next = state.attack_type.filter((x) => x !== t);
       else if (t === BENIGN) next = [BENIGN];
       else next = state.attack_type.filter((x) => x !== BENIGN).concat([t]);
-      state = normalise(Object.assign({}, state, { attack_type: next }), tax);
+
+      const nextObj = { attack_type: next };
+      if (t === BENIGN && !has) {
+        nextObj.intention = "benign";
+        nextObj.severity = { J: 0, I: 0, L: 0 };
+        nextObj.attack_subcategory = [];
+      } else if (next.length > 0 && next[0] !== BENIGN && state.intention === "benign") {
+        nextObj.intention = "adversarial";
+      }
+
+      state = normalise(Object.assign({}, state, nextObj), tax);
       // Newly-selected attack types default their severity to 0 → the annotator must pick 1–5.
       clearError("attack_type");
       clearError("attack_subcategory");
@@ -457,15 +471,19 @@
       paintChips();
       paintSubcats();
       paintSeverity();
+      if (refs.controls.intention) {
+        refs.controls.intention.value = state.intention || "";
+      }
       paintOutput();
       emit();
     }
     function buildChips() {
       const wrap = h('<div role="group" aria-label="Attack type" style="display:flex;flex-wrap:wrap;gap:8px"></div>');
       tax.attack_type.forEach((opt) => {
+        const isBen = opt.value === BENIGN;
         const btn = h(
           '<button type="button" data-chip="' + esc(opt.value) + '" data-hover="chiptoggle" style="' + CHIP_BASE + CHIP_OFF + '">' +
-            '<span data-check style="display:none;line-height:0">' + App.icon("AiOutlineCheck", { size: 12 }) + "</span>" +
+            '<span data-check style="display:none;line-height:0">' + App.icon("AiOutlineCheck", { size: 13 }) + "</span>" +
             esc(opt.label) + "</button>",
         );
         btn.addEventListener("click", () => toggleType(opt.value));
@@ -490,17 +508,32 @@
       box.innerHTML = "";
       const types = state.attack_type.filter((t) => t !== BENIGN && (tax.attack_subcategory[t] || []).length);
       const benignOnly = isBenignOnly(state.attack_type);
-      field.style.display = benignOnly ? "none" : "";
-      if (benignOnly) return;
+      if (benignOnly) {
+        box.appendChild(h(
+          '<div style="padding:8px 12px;color:#047857;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;background:#ecfdf5;border-radius:6px;border:1px solid #a7f3d0">' +
+          '<span style="width:7px;height:7px;border-radius:50%;background:#10b981"></span>' +
+          'Benign prompt — no attack subcategories apply.</div>'
+        ));
+        return;
+      }
       if (!types.length) {
-        box.appendChild(h('<div style="' + HINT_STYLE + 'padding:2px 0">Select an attack type above to choose its subcategories.</div>'));
+        box.appendChild(h(
+          '<div style="padding:10px 12px;color:#475569;font-size:13px;font-weight:500;background:#f8fafc;border-radius:6px;border:1px dashed #cbd5e1">' +
+          'Select an attack type above to choose its subcategories.</div>'
+        ));
         return;
       }
       const selected = new Set(state.attack_subcategory);
       types.forEach((t, gi) => {
-        const group = h('<div style="' + (gi ? "margin-top:10px;padding-top:10px;border-top:1px dashed #e2e8f0;" : "") + '"></div>');
-        group.appendChild(h('<div style="' + GROUP_HEAD + '">' + esc(tax._labels.attack_type[t] || t) + "</div>"));
-        const list = h('<div style="display:grid;grid-template-columns:1fr;gap:6px"></div>');
+        const group = h('<div style="' + (gi ? "margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0;" : "") + '"></div>');
+        const typeName = esc(tax._labels.attack_type[t] || t);
+        group.appendChild(h(
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">' +
+          '<span style="width:7px;height:7px;border-radius:2px;background:#2563eb"></span>' +
+          '<span style="font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#000000">' + typeName + ' SUBCATEGORIES</span>' +
+          '</div>'
+        ));
+        const list = h('<div style="display:grid;grid-template-columns:1fr;gap:6px;padding-left:2px"></div>');
         (tax.attack_subcategory[t] || []).forEach((opt) => {
           const cb = App.checkbox({
             checked: selected.has(opt.value),
@@ -509,10 +542,12 @@
             disabled: readOnly,
             onChange: (checked) => toggleSub(opt.value, checked),
           });
-          cb.style.fontSize = "13.5px";
+          cb.style.fontSize = "13px";
+          cb.style.fontWeight = "500";
+          cb.style.color = "#000000";
           cb.style.alignItems = "flex-start";
           cb.style.lineHeight = "1.35";
-          cb.input.style.marginTop = "1px";
+          cb.input.style.marginTop = "2px";
           list.appendChild(cb);
         });
         group.appendChild(list);
@@ -533,8 +568,8 @@
         label.style.whiteSpace = "nowrap";
         label.innerHTML =
           esc("Severity " + k) +
-          '<span style="font-weight:500;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;min-width:0">' +
-          esc(on ? SEVERITY_SHORT[k] : "(n/a)") + "</span>";
+          '<span style="font-weight:600;color:' + (on ? "#1d4ed8" : "#94a3b8") + ';overflow:hidden;text-overflow:ellipsis;min-width:0">' +
+          esc(on ? " (" + SEVERITY_SHORT[k] + ")" : " (n/a)") + "</span>";
         label.title = SEVERITY_TITLE[k] + (on ? "" : " is not a selected attack type");
       });
     }
@@ -545,7 +580,6 @@
       const out = deriveOutput(state);
       refs.output.innerHTML = OUTPUT_KEYS.map((k) => outputChip(k, out[k])).join("");
     }
-
 
     /* ---- read-only ---- */
     function applyReadOnly() {
@@ -591,19 +625,41 @@
           }),
         );
 
-      /* Classification */
-      const cls = section("Classification");
+      /* Classification & Assessment */
+      const cls = section("Classification & Attack Assessment");
       const g1 = grid2();
       g1.appendChild(singleField("data_type", "Select data type"));
       g1.appendChild(singleField("data_structure", "Select data structure"));
       cls.appendChild(g1);
-      cls.appendChild(fieldWrap("attack_type", esc("Attack type") + '<span style="font-weight:500;color:#94a3b8">multi-select · Benign is exclusive</span>', buildChips()));
+      cls.appendChild(fieldWrap("attack_type", esc("Attack type") + '<span style="font-weight:500;color:#64748b">multi-select · Benign is exclusive</span>', buildChips()));
       refs.subBox = h('<div style="' + BOX_STYLE + '"></div>');
       refs.subField = fieldWrap("attack_subcategory", esc("Attack subcategory"), refs.subBox);
       cls.appendChild(refs.subField);
 
-      /* Context */
-      const ctx = section("Context");
+      /* Severity (placed right after Attack subcategory) */
+      const sevGrid = h('<div style="display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:12px"></div>');
+      const levelOpts = tax.severity_levels.map((n) => ({ value: String(n), label: String(n) }));
+      SEVERITY_KEYS.forEach((k) => {
+        const key = "severity_" + k;
+        const sel = mkSelect(key, levelOpts, String(state.severity[k]), {
+          onChange: (v) => {
+            state.severity[k] = toSeverity(v);
+            clearError(key);
+            emit();
+          },
+        });
+        const wrap = fieldWrap(key, esc("Severity " + k), sel);
+        refs.sevLabels[k] = wrap.querySelector('[data-role="label"]');
+        sevGrid.appendChild(wrap);
+      });
+      cls.appendChild(sevGrid);
+      cls.appendChild(h('<div style="' + HINT_STYLE + 'margin-top:-6px">J = jailbreak · I = prompt injection · L = prompt leakage. 0 = not applicable, 1 = low, 5 = critical.</div>'));
+
+      /* Intention (placed right after Severity) */
+      cls.appendChild(singleField("intention", "Select intention"));
+
+      /* Context & Verification */
+      const ctx = section("Context & Verification");
       const g2 = grid2();
       g2.appendChild(singleField("domain", "Select domain"));
       g2.appendChild(singleField("role", "Select role"));
@@ -636,13 +692,13 @@
       refs.docSwitch.setAttribute("aria-label", "Document edited");
       const docRow = h('<div style="display:flex;align-items:center;gap:10px;height:36px"></div>');
       docRow.appendChild(refs.docSwitch);
-      docRow.appendChild(h('<span style="font-size:13.5px;color:#0f172a">Document edited</span>'));
+      docRow.appendChild(h('<span style="font-size:13.5px;font-weight:600;color:#000000">Document edited</span>'));
       g3.appendChild(fieldWrap("document_edited", esc("Document edited"), docRow));
       ctx.appendChild(g3);
       const ta = h(
         '<textarea rows="3" data-hover="fieldfocus" placeholder="Where does this prompt come from? Any context worth recording…" style="' +
           App.tokens.INPUT_STYLE.replace("height:36px;", "height:auto;min-height:78px;") +
-          'padding:6px 11px;line-height:1.5;resize:vertical"></textarea>',
+          'padding:6px 11px;line-height:1.5;resize:vertical;font-size:13px;color:#000000"></textarea>',
       );
       ta.value = state.source_description;
       ta.setAttribute("aria-label", "Source description");
@@ -654,28 +710,8 @@
         emit();
       });
       refs.controls.source_description = ta;
-      ctx.appendChild(fieldWrap("source_description", esc("Source description") + '<span style="font-weight:500;color:#94a3b8">optional</span>', ta));
+      ctx.appendChild(fieldWrap("source_description", esc("Source description") + '<span style="font-weight:500;color:#64748b">optional</span>', ta));
 
-      /* Assessment */
-      const asm = section("Assessment");
-      const sevGrid = h('<div style="display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:12px"></div>');
-      const levelOpts = tax.severity_levels.map((n) => ({ value: String(n), label: String(n) }));
-      SEVERITY_KEYS.forEach((k) => {
-        const key = "severity_" + k;
-        const sel = mkSelect(key, levelOpts, String(state.severity[k]), {
-          onChange: (v) => {
-            state.severity[k] = toSeverity(v);
-            clearError(key);
-            emit();
-          },
-        });
-        const wrap = fieldWrap(key, esc("Severity " + k), sel);
-        refs.sevLabels[k] = wrap.querySelector('[data-role="label"]');
-        sevGrid.appendChild(wrap);
-      });
-      asm.appendChild(sevGrid);
-      asm.appendChild(h('<div style="' + HINT_STYLE + 'margin-top:-6px">J = jailbreak · I = prompt injection · L = prompt leakage. 0 = not applicable, 1 = low, 5 = critical.</div>'));
-      asm.appendChild(singleField("intention", "Select intention"));
 
       /* Output (derived) - hidden from annotator form */
       if (o.showOutput) {

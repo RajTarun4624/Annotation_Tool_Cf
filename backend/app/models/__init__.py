@@ -4,6 +4,7 @@ from app.models.project import Project
 from app.models.queue import Queue
 from app.models.task import Task
 from app.models.task_annotation import TaskAnnotation
+from app.models.task_output import TaskOutput
 from app.models.audit_log import AuditLog
 from app.models.user_session import UserSession
 
@@ -17,6 +18,8 @@ __all__ = [
     "Queue",
     "Task",
     "TaskAnnotation",
+    "TaskOutput",
     "AuditLog",
     "UserSession",
 ]
+

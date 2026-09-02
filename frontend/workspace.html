@@ -272,35 +272,8 @@
   }
 
   /* ── Centre panel ────────────────────────────────────────────────────────── */
-  function metaTable(meta) {
-    const keys = Object.keys(meta || {});
-    if (!keys.length) return null;
-    const wrap = App.el(
-      '<div style="border:1px solid #cbd5e1;border-radius:12px;background:#ffffff;overflow:hidden">' +
-        '<button type="button" data-role="toggle" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 14px;border:0;background:#ffffff;cursor:pointer;font-family:inherit;color:#000000;text-align:left">' +
-        '<span style="display:flex;align-items:center;gap:8px">' + App.icon("AiOutlineTable", { size: 14, color: "#475569" }) +
-        '<span style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#000000">Seed metadata from sheet</span>' +
-        '<span style="font-family:' + T.MONO + ';font-size:11px;font-weight:700;background:#f1f5f9;color:#000000;padding:1px 6px;border-radius:4px;border:1px solid #cbd5e1">' + keys.length + "</span></span>" +
-        '<span data-role="chev" style="display:inline-flex;transition:transform .2s;color:#475569">' + App.icon("AiOutlineDown", { size: 12 }) + "</span></button>" +
-        '<div data-role="body" style="display:none;border-top:1px solid #e2e8f0;overflow-x:auto">' +
-        '<table style="width:100%;border-collapse:collapse;font-size:13px;color:#000000">' +
-        keys.map((k) =>
-          '<tr><td style="padding:8px 14px;border-bottom:1px solid #f1f5f9;font-family:' + T.MONO + ';font-size:12px;font-weight:600;color:#334155;white-space:nowrap;width:1%;vertical-align:top">' + esc(k) + "</td>" +
-          '<td style="padding:8px 14px;border-bottom:1px solid #f1f5f9;word-break:break-word;vertical-align:top;color:#000000;font-weight:500">' + esc(stringify(meta[k])) + "</td></tr>",
-        ).join("") +
-        "</table></div></div>",
-    );
-    const body = R("body", wrap);
-    const chev = R("chev", wrap);
-    R("toggle", wrap).addEventListener("click", () => {
-      const open = body.style.display === "none";
-      body.style.display = open ? "block" : "none";
-      chev.style.transform = open ? "rotate(180deg)" : "";
-    });
-    return wrap;
-  }
-
   function paintCentre() {
+
     const cur = state.current;
     const body = els.centreBody;
     body.innerHTML = "";
@@ -359,10 +332,9 @@
     }
 
     body.appendChild(App.el('<div style="' + PROMPT_BOX + '"></div>')).textContent = task.input_text || "";
-    const meta = metaTable(task.meta_data);
-    if (meta) body.appendChild(meta);
     centrePanel.scrollTop = 0;
   }
+
 
   /* ── Right panel: banner + form ──────────────────────────────────────────── */
   function bannerHtml(kind, title, text) {

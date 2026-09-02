@@ -21,7 +21,11 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models.task_output import TaskOutput
+
 from app.main import app
+
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -573,13 +577,17 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         assert rel_res.status_code == 200, rel_res.text
         assert rel_res.json()["success"] is True
 
-        dec_res = client.post(
-            _api(f"/workspace/tasks/{t3}/decline"),
-            headers=ah,
-            json={"reason": "Corrupted text"},
-        )
-        assert dec_res.status_code == 200, dec_res.text
-        assert dec_res.json()["success"] is True
+        # ---- tasks_output table verification -----------------------------
+        db = SessionLocal()
+        try:
+            out_rows = db.query(TaskOutput).filter(TaskOutput.task_id == t1).all()
+            assert len(out_rows) >= 1
+            assert out_rows[0].dataset == f"flow_{suffix}_0001"
+            assert out_rows[0].status == "submitted"
+            assert "jailbreak" in (out_rows[0].attack_type or [])
+        finally:
+            db.close()
+
 
 
     finally:

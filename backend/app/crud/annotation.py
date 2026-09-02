@@ -22,8 +22,9 @@ from app.core.taxonomy import length_bucket
 from app.crud.queue import get_queue_by_id
 from app.models.queue import Queue
 from app.models.task import Task
-from app.models import TaskAnnotation
+from app.models import TaskAnnotation, TaskOutput
 from app.services.consensus import (
+
     build_record,
     compute_consensus,
     normalise_annotation,
@@ -518,6 +519,77 @@ def submit_annotation(
         ann.updated_at = now
     db.flush()
 
+    # Record in tasks_output table
+    derived = _derive_output(clean)
+    sev = clean.get("severity") if isinstance(clean.get("severity"), dict) else {}
+    out_row = (
+        db.query(TaskOutput)
+        .filter(TaskOutput.task_id == task.id, TaskOutput.user_id == uid)
+        .first()
+    )
+    if out_row is None:
+        out_row = TaskOutput(
+            id=uuid.uuid4(),
+            task_id=task.id,
+            user_id=uid,
+            user_name=user.get("full_name") or "",
+            queue_id=task.queue_id,
+            dataset=task.dataset or "",
+            input_text=task.input_text or "",
+            data_type=clean.get("data_type"),
+            data_structure=clean.get("data_structure"),
+            attack_type=clean.get("attack_type") or [],
+            attack_subcategory=clean.get("attack_subcategory") or [],
+            domain=clean.get("domain"),
+            role=clean.get("role"),
+            verified=bool(clean.get("verified")),
+            language=clean.get("language") or "en",
+            document_edited=bool(clean.get("document_edited")),
+            source_description=clean.get("source_description") or "",
+            severity_j=int(sev.get("J") or 0),
+            severity_i=int(sev.get("I") or 0),
+            severity_l=int(sev.get("L") or 0),
+            intention=clean.get("intention"),
+            source=clean.get("source") or task.source or "real_user",
+            jailbreak=derived["jailbreak"],
+            prompt_injection=derived["prompt_injection"],
+            prompt_leakage=derived["prompt_leakage"],
+            annotation_data=clean,
+            elapsed_seconds=max(0, int(elapsed_seconds or 0)),
+            status="submitted",
+            submitted_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(out_row)
+    else:
+        out_row.user_name = user.get("full_name") or out_row.user_name
+        out_row.dataset = task.dataset or out_row.dataset
+        out_row.input_text = task.input_text or out_row.input_text
+        out_row.data_type = clean.get("data_type")
+        out_row.data_structure = clean.get("data_structure")
+        out_row.attack_type = clean.get("attack_type") or []
+        out_row.attack_subcategory = clean.get("attack_subcategory") or []
+        out_row.domain = clean.get("domain")
+        out_row.role = clean.get("role")
+        out_row.verified = bool(clean.get("verified"))
+        out_row.language = clean.get("language") or "en"
+        out_row.document_edited = bool(clean.get("document_edited"))
+        out_row.source_description = clean.get("source_description") or ""
+        out_row.severity_j = int(sev.get("J") or 0)
+        out_row.severity_i = int(sev.get("I") or 0)
+        out_row.severity_l = int(sev.get("L") or 0)
+        out_row.intention = clean.get("intention")
+        out_row.source = clean.get("source") or task.source or "real_user"
+        out_row.jailbreak = derived["jailbreak"]
+        out_row.prompt_injection = derived["prompt_injection"]
+        out_row.prompt_leakage = derived["prompt_leakage"]
+        out_row.annotation_data = clean
+        out_row.elapsed_seconds = max(0, int(elapsed_seconds or 0))
+        out_row.status = "submitted"
+        out_row.submitted_at = now
+        out_row.updated_at = now
+
     submitted = int(
         db.query(func.count(TaskAnnotation.id))
         .filter(TaskAnnotation.task_id == task.id, TaskAnnotation.status == "submitted")
@@ -543,6 +615,7 @@ def submit_annotation(
     db.commit()
     db.refresh(task)
     return []
+
 
 
 # ─── QA workspace ──────────────────────────────────────────────────────────
