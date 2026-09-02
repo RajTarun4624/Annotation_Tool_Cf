@@ -144,6 +144,9 @@ def read_workspace_task(
 
 
 @router.put("/tasks/{task_id}/draft")
+@router.post("/tasks/{task_id}/draft")
+@router.put("/tasks/{task_id}/draft/")
+@router.post("/tasks/{task_id}/draft/")
 def save_draft(
     task_id: str,
     payload: DraftRequest,
@@ -164,6 +167,9 @@ def save_draft(
 
 
 @router.post("/tasks/{task_id}/submit")
+@router.put("/tasks/{task_id}/submit")
+@router.post("/tasks/{task_id}/submit/")
+@router.put("/tasks/{task_id}/submit/")
 def submit_task(
     task_id: str,
     payload: SubmitRequest,
@@ -190,6 +196,9 @@ def submit_task(
 
 
 @router.post("/tasks/{task_id}/decline")
+@router.put("/tasks/{task_id}/decline")
+@router.post("/tasks/{task_id}/decline/")
+@router.put("/tasks/{task_id}/decline/")
 def decline_workspace_task(
     task_id: str,
     payload: DeclineRequest,
@@ -208,6 +217,9 @@ def decline_workspace_task(
 
 
 @router.post("/tasks/{task_id}/release")
+@router.put("/tasks/{task_id}/release")
+@router.post("/tasks/{task_id}/release/")
+@router.put("/tasks/{task_id}/release/")
 def release_workspace_task(
     task_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -225,6 +237,9 @@ def release_workspace_task(
 
 
 @router.post("/tasks/{task_id}/skip")
+@router.put("/tasks/{task_id}/skip")
+@router.post("/tasks/{task_id}/skip/")
+@router.put("/tasks/{task_id}/skip/")
 def skip_workspace_task(
     task_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -238,6 +253,7 @@ def skip_workspace_task(
             db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
         ),
     }
+
 
 
 

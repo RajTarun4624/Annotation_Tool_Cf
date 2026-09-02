@@ -172,3 +172,71 @@ def export_single_task_endpoint(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+
+@router.post("/{task_id}/release")
+@router.put("/{task_id}/release")
+@router.post("/{task_id}/release/")
+@router.put("/{task_id}/release/")
+def release_task_endpoint(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    from app.crud import annotation as crud
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    crud.release_task(db, task, current_user)
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
+
+@router.post("/{task_id}/decline")
+@router.put("/{task_id}/decline")
+@router.post("/{task_id}/decline/")
+@router.put("/{task_id}/decline/")
+def decline_task_endpoint(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    payload: dict = None,
+):
+    from app.crud import annotation as crud
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    reason = (payload or {}).get("reason", "") if isinstance(payload, dict) else ""
+    crud.decline_task(db, task, current_user, reason)
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
+
+@router.post("/{task_id}/skip")
+@router.put("/{task_id}/skip")
+@router.post("/{task_id}/skip/")
+@router.put("/{task_id}/skip/")
+def skip_task_endpoint(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    from app.crud import annotation as crud
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return {
+        "success": True,
+        "next_task_id": crud.next_task_id(
+            db, task.queue_id, str(current_user["id"]), int(task.sequence or 0)
+        ),
+    }
+
+
