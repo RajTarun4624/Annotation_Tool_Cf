@@ -17,8 +17,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903g"></script>
-<script src="js/annotation-form.js?v=20260903g"></script>
+<script src="js/app.js?v=20260903i"></script>
+<script src="js/annotation-form.js?v=20260903i"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -989,16 +989,19 @@
   state.taxonomy = await taxonomyRequest;
   state.labels = buildLabels(state.taxonomy);
 
-  // Pick task to open: the requested task, else the task this reviewer paused (resume),
-  // else a random task awaiting review (same shuffle rule as the production workspace).
+  // Pick task to open: the requested task, else ask the server for a free task awaiting
+  // review (it resumes this reviewer's own draft first). Fallback: a local pick.
   const awaiting = state.allTasks.filter((t) => t.status === "submitted");
-  const resumable = awaiting.find((t) => t.my_draft);
-  const randomPick = awaiting.length ? awaiting[Math.floor(Math.random() * awaiting.length)] : null;
-  const first =
-    (requestedTaskId && state.allTasks.some((t) => t.id === requestedTaskId) && requestedTaskId) ||
-    (resumable && resumable.id) ||
-    (randomPick && randomPick.id) ||
-    null;
+  let first = (requestedTaskId && state.allTasks.some((t) => t.id === requestedTaskId) && requestedTaskId) || null;
+  if (!first && awaiting.length) {
+    try {
+      const res = await App.api("/workspace/qa/" + encodeURIComponent(queueId) + "/next");
+      first = (res && res.task_id) || null;
+    } catch (e) {
+      const resumable = awaiting.find((t) => t.my_draft);
+      first = (resumable && resumable.id) || awaiting[Math.floor(Math.random() * awaiting.length)].id;
+    }
+  }
   if (first) await openTask(first);
   else renderCompletedQueue();
 })();

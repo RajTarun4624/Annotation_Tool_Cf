@@ -117,6 +117,26 @@ def _validation_error(errors: list[str]) -> JSONResponse:
 
 # ─── Production workspace ──────────────────────────────────────────────────
 
+@router.get("/queues/{queue_id}/next")
+def next_workspace_task(
+    queue_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Start Working: the server picks the least-loaded available task for the caller."""
+    meta = get_queue_access_meta(db, queue_id)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue not found")
+    if not _assigned_or_admin(meta, current_user):
+        raise _forbid()
+    if meta.get("annotation_type") == "qa":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use the QA workspace")
+    queue: Queue | None = crud.get_queue(db, queue_id)
+    if queue is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue not found")
+    return {"task_id": crud.next_task_id(db, queue.id, str(current_user["id"]), None)}
+
+
 @router.get("/queues/{queue_id}")
 def read_workspace_queue(
     queue_id: str,
@@ -253,6 +273,7 @@ def skip_workspace_task(
 ) -> dict[str, Any]:
     task = _load_task_or_404(db, task_id)
     _require_production_task_access(db, task, current_user)
+    crud.skip_task(db, task, current_user)
     return {
         "success": True,
         "next_task_id": crud.next_task_id(
@@ -423,6 +444,26 @@ def skip_qa_task(
             db, task.qa_queue_id, int(task.sequence or 0), str(current_user["id"])
         ),
     }
+
+
+@router.get("/qa/{qa_queue_id}/next")
+def next_qa_workspace_task(
+    qa_queue_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Start QA Review: the server picks a free task awaiting review for the caller."""
+    meta = get_queue_access_meta(db, qa_queue_id)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue not found")
+    if not _assigned_or_admin(meta, current_user):
+        raise _forbid()
+    if meta.get("annotation_type") != "qa":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a QA queue")
+    queue = crud.get_queue(db, qa_queue_id)
+    if queue is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue not found")
+    return {"task_id": crud.next_qa_task_id(db, queue.id, None, str(current_user["id"]))}
 
 
 @router.get("/qa/{qa_queue_id}")

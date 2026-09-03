@@ -337,15 +337,18 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
     return {"queue": queue_dict, "tasks": items, "my_done": my_done}
 
 
-def next_task_id(db: Session, queue_id: uuid.UUID, user_id: str, after_sequence: int) -> str | None:
-    """A random task the user can still work on (shuffled pool).
+def next_task_id(
+    db: Session, queue_id: uuid.UUID, user_id: str, after_sequence: int | None = None
+) -> str | None:
+    """Availability-based pick: the task with the FEWEST other people on it.
 
-    The pool excludes locked tasks (submitted/approved: enough annotators
-    already submitted, so a further annotator must never receive them), tasks
-    this user already submitted or declined, and the task just left
-    (``after_sequence``) unless it is the only one left. A task the user has
-    paused as a draft is preferred so they resume their own work first.
-    None when nothing is left.
+    Pool = unlocked tasks (not submitted/approved) the user has not submitted or
+    declined, minus the task just left (``after_sequence``) unless it is the only
+    one. A task the user already holds as a draft (paused, or claimed by opening
+    it) is returned first so they resume their own work. Otherwise every task is
+    scored by the number of OTHER annotators with a draft or submission on it and
+    the least-loaded task wins, ties broken at random. Four annotators starting
+    together therefore land on four different tasks whenever four are free.
     """
     uid = _parse_uuid(user_id)
     tasks = (
@@ -357,24 +360,37 @@ def next_task_id(db: Session, queue_id: uuid.UUID, user_id: str, after_sequence:
         return None
     done_ids: set[uuid.UUID] = set()
     draft_ids: set[uuid.UUID] = set()
-    if uid is not None:
-        rows = db.query(TaskAnnotation.task_id, TaskAnnotation.status).filter(
-            TaskAnnotation.task_id.in_([t.id for t in tasks]),
-            TaskAnnotation.user_id == uid,
-        )
-        for task_id, astatus in rows:
+    load: dict[uuid.UUID, int] = {t.id: 0 for t in tasks}
+    rows = db.query(TaskAnnotation.task_id, TaskAnnotation.user_id, TaskAnnotation.status).filter(
+        TaskAnnotation.task_id.in_(list(load.keys()))
+    )
+    for task_id, ann_uid, astatus in rows:
+        if uid is not None and ann_uid == uid:
             if astatus in ("submitted", "declined"):
                 done_ids.add(task_id)
             elif astatus == "draft":
                 draft_ids.add(task_id)
+        elif astatus in ("draft", "submitted"):
+            load[task_id] = load.get(task_id, 0) + 1
     candidates = [t for t in tasks if t.id not in done_ids]
     if not candidates:
         return None
-    others = [t for t in candidates if (t.sequence or 0) != after_sequence]
+    others = [t for t in candidates if after_sequence is None or (t.sequence or 0) != after_sequence]
     pool = others or candidates
     resumable = [t for t in pool if t.id in draft_ids]
-    chosen = random.choice(resumable or pool)
-    return str(chosen.id)
+    if resumable:
+        return str(random.choice(resumable).id)
+    best = min(load[t.id] for t in pool)
+    return str(random.choice([t for t in pool if load[t.id] == best]).id)
+
+
+def skip_task(db: Session, task: Task, user: dict[str, Any]) -> None:
+    """Skip: drop the caller's untouched claim (an empty draft created when the
+    task was opened) so the task counts as free for everyone else. A draft with
+    real answers is kept."""
+    ann = get_my_annotation(task, user["id"])
+    if ann is not None and ann.status == "draft" and not (ann.data or {}):
+        release_task(db, task, user)
 
 
 def upsert_draft(
@@ -716,11 +732,12 @@ def list_qa_tasks(db: Session, qa_queue: Queue, user_id: str | None = None) -> d
 
 
 def next_qa_task_id(
-    db: Session, qa_queue_id: uuid.UUID | None, after_sequence: int, user_id: str | None = None
+    db: Session, qa_queue_id: uuid.UUID | None, after_sequence: int | None = None, user_id: str | None = None
 ) -> str | None:
-    """A random task still awaiting review in the QA queue (shuffled pool),
-    excluding the task just left unless it is the only one. A task the caller
-    paused (their QA draft) is preferred so they resume their own work."""
+    """Availability-based pick for reviewers: a task awaiting review that no
+    other reviewer has a draft on, preferring the caller's own paused draft;
+    the task just left (``after_sequence``) is avoided unless it is the only
+    one. Ties are broken at random."""
     if qa_queue_id is None:
         return None
     rows = (
@@ -730,15 +747,18 @@ def next_qa_task_id(
     )
     if not rows:
         return None
-    others = [r for r in rows if (r.sequence or 0) != after_sequence]
+    others = [r for r in rows if after_sequence is None or (r.sequence or 0) != after_sequence]
     pool = others or rows
     uid = str(user_id or "")
-    mine = [
-        r for r in pool
-        if uid and isinstance(r.draft_data, dict) and str(r.draft_data.get("user_id") or "") == uid
-    ]
-    chosen = random.choice(mine or pool)
-    return str(chosen.id)
+
+    def owner(r) -> str:
+        return str(r.draft_data.get("user_id") or "") if isinstance(r.draft_data, dict) else ""
+
+    mine = [r for r in pool if uid and owner(r) == uid]
+    if mine:
+        return str(random.choice(mine).id)
+    free = [r for r in pool if not owner(r)]
+    return str(random.choice(free or pool).id)
 
 
 def save_qa_draft(

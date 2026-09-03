@@ -86,14 +86,19 @@ def input_preview(text: str | None, limit: int = INPUT_PREVIEW_CHARS) -> str:
 
 
 def _consensus_reached(task: Task) -> bool | None:
-    if (task.status or "") != "approved":
-        return None
-    record = task.final_record if isinstance(task.final_record, dict) else None
-    if not record:
-        return None
-    agreement = record.get("inter_annotator_agreement")
-    if isinstance(agreement, dict) and "consensus_reached" in agreement:
-        return bool(agreement.get("consensus_reached"))
+    """True/False once the task has its full set of submissions (status
+    submitted or approved); None while annotators are still working."""
+    status = task.status or ""
+    if status == "approved":
+        record = task.final_record if isinstance(task.final_record, dict) else None
+        agreement = record.get("inter_annotator_agreement") if record else None
+        if isinstance(agreement, dict) and "consensus_reached" in agreement:
+            return bool(agreement.get("consensus_reached"))
+    if status in ("submitted", "approved"):
+        anns = [a for a in (task.annotations or []) if (a.status or "") == "submitted"]
+        if anns:
+            from app.services.consensus import compute_consensus  # local import: avoids a cycle
+            return bool(compute_consensus(task, anns)["consensus_reached"])
     return None
 
 
@@ -579,7 +584,7 @@ def list_queue_tasks(
 
     task_query = (
         db.query(Task)
-        .options(joinedload(Task.queue))
+        .options(joinedload(Task.queue), selectinload(Task.annotations))
         .filter(task_filter)
         .order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc())
     )

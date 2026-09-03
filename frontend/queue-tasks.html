@@ -14,7 +14,7 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903g"></script>
+<script src="js/app.js?v=20260903i"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -399,7 +399,8 @@
           );
         },
       },
-      {
+      // Finalised by is a QA-queue concept; production lists hide the column.
+      ...(qa ? [{
         title: "Finalised by", key: "finalized", width: 170,
         render: (r) => {
           if (!r.finalized_by_name && !r.finalized_at) return '<span style="font-size:12px;color:#94a3b8">—</span>';
@@ -408,12 +409,14 @@
             '<span style="display:block;font-size:11px;color:#64748b;white-space:nowrap;margin-top:2px">' + esc(App.fmt.dateTime(r.finalized_at)) + "</span></div>"
           );
         },
-      },
+      }] : []),
       {
         title: "Consensus", key: "consensus", width: 120,
+        // true = every annotator gave identical answers; false = at least one field differs;
+        // "—" while the task is still collecting submissions.
         render: (r) => {
-          if (r.consensus_reached === true) return App.pill("consensus", "emerald");
-          if (r.consensus_reached === false) return App.pill("majority/conflict", "amber");
+          if (r.consensus_reached === true) return App.pill("true", "emerald");
+          if (r.consensus_reached === false) return App.pill("false", "rose");
           return App.pill("—", "slate");
         },
       },
@@ -602,7 +605,7 @@
       (task.source ? chip(esc(display(sourceField, task.source, tax))) : "") +
       App.statusPill(status) +
       chip(esc(submitted) + "/" + esc(required == null ? "—" : required) + " annotators submitted") +
-      (d.consensus_reached === true ? App.pill("consensus", "emerald") : d.consensus_reached === false ? App.pill("majority/conflict", "amber") : "") +
+      (d.consensus_reached === true ? App.pill("consensus true", "emerald") : d.consensus_reached === false ? App.pill("consensus false", "rose") : "") +
       "</div>";
     html += App.sectionLabel("Prompt") + promptBox(text || row.input_preview || "");
     if (task.qa_notes) {

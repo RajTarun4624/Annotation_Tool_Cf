@@ -15,8 +15,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903g"></script>
-<script src="js/annotation-form.js?v=20260903g"></script>
+<script src="js/app.js?v=20260903i"></script>
+<script src="js/annotation-form.js?v=20260903i"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -708,8 +708,20 @@
     if (state.form) { state.form.destroy(); state.form = null; }
     els.form.innerHTML = App.skeleton(8);
     try {
-      const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId));
+      let payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId));
       if (seq !== state.loadSeq) return;
+      // Claim: an empty draft marks the task as taken, so the server steers other
+      // annotators to a different task. Skip/Release drop the claim again.
+      if (payload && payload.editable && !payload.my_annotation) {
+        try {
+          const claimed = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/draft", {
+            method: "PUT",
+            body: { data: {}, elapsed_seconds: 0 },
+          });
+          if (seq !== state.loadSeq) return;
+          if (claimed && claimed.task) payload = claimed;
+        } catch (e) { /* claim is best-effort */ }
+      }
       applyPayload(payload);
       state.elapsed = Number(payload.my_annotation && payload.my_annotation.elapsed_seconds) || 0;
       paintCentre();
@@ -785,20 +797,22 @@
 
   state.taxonomy = await taxonomyRequest;
 
-  // Pick task to open: the requested task, else a draft this user paused (resume), else a
-  // random available task. "Available" excludes tasks locked by enough submissions
-  // (submitted/approved) and tasks this user already submitted or declined.
+  // Pick task to open: the requested task, else ask the server for the least-loaded
+  // available task (it resumes this user's own draft first). Fallback: a local pick.
   const LOCKED = ["submitted", "approved"];
   const available = state.allTasks.filter(
     (t) => !LOCKED.includes(String(t.status || "").toLowerCase()) && t.my_status !== "submitted" && t.my_status !== "declined",
   );
-  const resumable = available.find((t) => t.my_status === "draft" || t.my_status === "returned");
-  const randomPick = available.length ? available[Math.floor(Math.random() * available.length)] : null;
-  const first =
-    (requestedTaskId && available.some((t) => t.id === requestedTaskId) && requestedTaskId) ||
-    (resumable && resumable.id) ||
-    (randomPick && randomPick.id) ||
-    null;
+  let first = (requestedTaskId && available.some((t) => t.id === requestedTaskId) && requestedTaskId) || null;
+  if (!first && available.length) {
+    try {
+      const res = await App.api("/workspace/queues/" + encodeURIComponent(queueId) + "/next");
+      first = (res && res.task_id) || null;
+    } catch (e) {
+      const resumable = available.find((t) => t.my_status === "draft" || t.my_status === "returned");
+      first = (resumable && resumable.id) || available[Math.floor(Math.random() * available.length)].id;
+    }
+  }
 
   if (first) {
     await openTask(first);
