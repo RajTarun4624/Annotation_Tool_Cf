@@ -712,9 +712,9 @@
       g1.appendChild(singleField("data_type", "Select data type"));
       g1.appendChild(singleField("data_structure", "Select data structure"));
       cls.appendChild(g1);
-      cls.appendChild(fieldWrap("attack_type", esc("Attack type") + '<span style="font-weight:500;color:#64748b">multi-select · Benign is exclusive</span>', buildChips()));
+      cls.appendChild(fieldWrap("attack_type", esc("Attack type"), buildChips()));
       refs.subBox = h('<div style="' + BOX_STYLE + '"></div>');
-      refs.subField = fieldWrap("attack_subcategory", esc("Attack subcategory") + '<span style="font-weight:500;color:#64748b">one per attack type</span>', refs.subBox);
+      refs.subField = fieldWrap("attack_subcategory", esc("Attack subcategory"), refs.subBox);
       cls.appendChild(refs.subField);
 
       /* Severity (placed right after Attack subcategory) */
@@ -743,7 +743,7 @@
       const ctx = section("Context & Verification");
       const g2 = grid2();
       g2.appendChild(singleField("domain", "Select domain"));
-      g2.appendChild(fieldWrap("role", esc("Role") + '<span style="font-weight:500;color:#64748b">multi-select</span>', buildRoleSelect()));
+      g2.appendChild(fieldWrap("role", esc("Role"), buildRoleSelect()));
       g2.appendChild(singleField("language"));
       g2.appendChild(singleField("source"));
       ctx.appendChild(g2);
