@@ -70,6 +70,26 @@ class AuthService:
 
         now = datetime.now(UTC).replace(tzinfo=None)
 
+        # CONCURRENT-TAB GRACE: the refresh cookie is shared by every tab of a
+        # browser, so two tabs refreshing together both present the same token.
+        # The loser arrives just after the winner rotated it. Within a short
+        # window, follow the replacement chain and rotate THAT session instead
+        # of treating the replay as theft (the cookie jar ends up holding the
+        # newest token either way).
+        hops = 0
+        while (
+            session.is_revoked
+            and session.replaced_by_session_id is not None
+            and session.last_used_at is not None
+            and (now - session.last_used_at).total_seconds() <= settings.REFRESH_GRACE_SECONDS
+            and hops < 5
+        ):
+            replacement = UserSessionRepository.get_session_by_id(db, session.replaced_by_session_id)
+            if replacement is None:
+                break
+            session = replacement
+            hops += 1
+
         # REUSE DETECTION: if the session has already been revoked
         if session.is_revoked:
             # Revoke ALL active sessions for this user due to potential theft

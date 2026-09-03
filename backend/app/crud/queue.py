@@ -26,7 +26,7 @@ from app.models.user import User
 from app.schemas.pagination import paginate_query
 
 
-MAX_TASKS_PER_QUEUE = 5000
+MAX_TASKS_PER_QUEUE = 10000
 DEFAULT_TIMER_SECONDS = 7200
 DEFAULT_REQUIRED_ANNOTATORS = 3
 INPUT_PREVIEW_CHARS = 140
@@ -345,58 +345,63 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
     touched: set[uuid.UUID] = set()
     if prod_ids:
         rows = (
-            db.query(Task.queue_id, TaskAnnotation.status, func.count(TaskAnnotation.id))
+            db.query(Task.queue_id, TaskAnnotation.status, Task.status, func.count(TaskAnnotation.id))
             .join(Task, Task.id == TaskAnnotation.task_id)
             .filter(
                 Task.queue_id.in_(prod_ids),
                 TaskAnnotation.user_id == uid,
                 TaskAnnotation.status.in_(("draft", "submitted")),
             )
-            .group_by(Task.queue_id, TaskAnnotation.status)
+            .group_by(Task.queue_id, TaskAnnotation.status, Task.status)
             .all()
         )
-        for qid, astatus, n in rows:
+        for qid, astatus, tstatus, n in rows:
             if astatus == "draft":
-                touched.add(qid)
+                # A draft on a task that is already locked cannot be resumed;
+                # it must not turn the queue into "Resume".
+                if tstatus not in ("submitted", "approved"):
+                    touched.add(qid)
             elif astatus == "submitted":
-                done_by_queue[qid] = int(n or 0)
+                done_by_queue[qid] = done_by_queue.get(qid, 0) + int(n or 0)
 
-    # QA queues: a paused QA draft (tasks.draft_data.user_id == caller) means "resume".
+    # QA queues: a task the caller holds (QA lease) means "resume".
     qa_ids = [q.id for q in queues if (q.annotation_type or "production") == "qa"]
     qa_draft_queues: set[uuid.UUID] = set()
     if qa_ids:
-        for qid, draft in (
-            db.query(Task.qa_queue_id, Task.draft_data)
-            .filter(Task.qa_queue_id.in_(qa_ids), Task.status == "submitted")
-            .all()
-        ):
-            if isinstance(draft, dict) and str(draft.get("user_id") or "") == str(uid):
-                qa_draft_queues.add(qid)
+        qa_draft_queues = {
+            qid
+            for (qid,) in db.query(Task.qa_queue_id)
+            .filter(Task.qa_queue_id.in_(qa_ids), Task.status == "submitted", Task.qa_owner_id == uid)
+            .distinct()
+        }
 
     # Production availability for THIS user: unlocked tasks (not submitted/approved)
-    # the user has not submitted or declined (drives the Start/Resume button).
-    # The queue only disappears (exhausted) once NO task is unlocked at all.
-    unlocked_by_queue: dict[uuid.UUID, set[uuid.UUID]] = {}
-    done_task_ids: set[uuid.UUID] = set()
+    # minus the ones they declined (drives the Start/Resume button). Counts only -
+    # no task ids cross into Python, so a 10,000-task queue costs the same as a
+    # 10-task one. The queue only disappears (exhausted) once NO task is unlocked.
+    unlocked_by_queue: dict[uuid.UUID, int] = {}
+    declined_by_queue: dict[uuid.UUID, int] = {}
     if prod_ids:
-        for tid, qid in (
-            db.query(Task.id, Task.queue_id)
+        for qid, n in (
+            db.query(Task.queue_id, func.count(Task.id))
             .filter(Task.queue_id.in_(prod_ids), Task.status.notin_(("submitted", "approved")))
-            .all()
+            .group_by(Task.queue_id)
         ):
-            unlocked_by_queue.setdefault(qid, set()).add(tid)
+            unlocked_by_queue[qid] = int(n or 0)
         # Responses model: a task the user already answered may be answered again,
         # so only DECLINED tasks are off-limits for them.
-        done_task_ids = {
-            tid
-            for (tid,) in db.query(TaskAnnotation.task_id)
-            .join(Task, Task.id == TaskAnnotation.task_id)
+        for qid, n in (
+            db.query(Task.queue_id, func.count(func.distinct(Task.id)))
+            .join(TaskAnnotation, TaskAnnotation.task_id == Task.id)
             .filter(
                 Task.queue_id.in_(prod_ids),
+                Task.status.notin_(("submitted", "approved")),
                 TaskAnnotation.user_id == uid,
                 TaskAnnotation.status == "declined",
             )
-        }
+            .group_by(Task.queue_id)
+        ):
+            declined_by_queue[qid] = int(n or 0)
 
     for queue, item in zip(queues, items):
         if item["annotation_type"] == "qa":
@@ -417,13 +422,13 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
         done = done_by_queue.get(queue.id, 0)
         total = item["total_tasks"]
         item["user_done_tasks"] = done
-        unlocked = unlocked_by_queue.get(queue.id, set())
-        available = len(unlocked - done_task_ids)
+        unlocked = unlocked_by_queue.get(queue.id, 0)
+        available = max(0, unlocked - declined_by_queue.get(queue.id, 0))
         item["user_available_tasks"] = available
         # Exhausted = the QUEUE has no open task left (every task has its required
         # submissions or is finalised). A user who has personally finished every
         # task while others are still open keeps seeing the queue as completed.
-        item["exhausted"] = total > 0 and len(unlocked) == 0
+        item["exhausted"] = total > 0 and unlocked == 0
         if item["status"] == "completed":
             item["user_status"] = "completed"
         elif queue.id in touched:

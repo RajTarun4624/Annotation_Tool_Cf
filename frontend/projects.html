@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,436 +8,448 @@
   <link rel="icon" href="public/favi.png">
   <style>
     /* Hover states that inline styles cannot express (app.js has no preset for picker rows). */
-    [data-hover=userrow]:not([data-checked]):hover{background:#f8fafc!important}
+    [data-hover=userrow]:not([data-checked]):hover {
+      background: #f8fafc !important
+    }
+
     /* Reference header strip is flex-col sm:flex-row: stack search above the button under 640px. */
-    @media (max-width:640px){[data-strip]{flex-direction:column;align-items:flex-start!important}[data-strip] [data-search]{max-width:none!important;width:100%}}
+    @media (max-width:640px) {
+      [data-strip] {
+        flex-direction: column;
+        align-items: flex-start !important
+      }
+
+      [data-strip] [data-search] {
+        max-width: none !important;
+        width: 100%
+      }
+    }
   </style>
 </head>
+
 <body style="margin:0">
-<script src="js/app.js?v=20260903v"></script>
-<script>
-(async () => {
-  const profile = await App.ensureSession();
-  if (!App.requirePermission("projects")) return;
-  const root = App.renderShell({ page: "projects", title: "Projects", subtitle: "Organize queues under delivery projects." });
+  <script src="js/icons.js?v=20260903y"></script>
+  <script src="js/app.js?v=20260903y"></script>
+  <script>
+    (async () => {
+      const profile = await App.ensureSession();
+      if (!App.requirePermission("projects")) return;
+      const root = App.renderShell({ page: "projects", title: "Projects", subtitle: "Organize queues under delivery projects." });
 
-  const { escapeHtml, icon, el, fmt, tokens } = App;
-  const MONO = tokens.MONO;
+      const { escapeHtml, icon, el, fmt, tokens } = App;
+      const MONO = tokens.MONO;
 
-  /* ── Constants ─────────────────────────────────────────────────────────── */
-  const MEDIA_TYPES = [
-    { label: "Image", value: "image" },
-    { label: "Video", value: "video" },
-    { label: "Text", value: "text" },
-    { label: "Audio", value: "audio" },
-    { label: "Document", value: "document" },
-    { label: "Multimodal", value: "multimodal" },
-  ];
-  const STATUSES = [
-    { label: "Active", value: "active" },
-    { label: "Completed", value: "completed" },
-    { label: "Archived", value: "archived" },
-  ];
-  const LABEL_STYLE = "display:block;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155;margin-bottom:6px";
-  const TEXTAREA_STYLE = tokens.INPUT_STYLE.replace("height:36px;padding:0 11px;", "height:auto;min-height:58px;padding:6px 11px;line-height:1.5;resize:vertical;");
-  const ERROR_STYLE = "display:none;font-size:12px;color:#e11d48;margin-top:4px";
+      /* ── Constants ─────────────────────────────────────────────────────────── */
+      const MEDIA_TYPES = [
+        { label: "Image", value: "image" },
+        { label: "Text", value: "text" },
+      ];
+      const STATUSES = [
+        { label: "Active", value: "active" },
+        { label: "Completed", value: "completed" },
+        { label: "Archived", value: "archived" },
+      ];
+      const LABEL_STYLE = "display:block;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#334155;margin-bottom:6px";
+      const TEXTAREA_STYLE = tokens.INPUT_STYLE.replace("height:36px;padding:0 11px;", "height:auto;min-height:58px;padding:6px 11px;line-height:1.5;resize:vertical;");
+      const ERROR_STYLE = "display:none;font-size:12px;color:#e11d48;margin-top:4px";
 
-  /* ── State ─────────────────────────────────────────────────────────────── */
-  let page = 1;
-  let pageSize = 10;
-  let searchTerm = "";
-  let rows = [];
-  let total = 0;
-  let loading = false;
-  let usersCache = null;      // active users for the assignee picker (loaded once)
-  let usersPromise = null;
-  let loadSeq = 0;            // guards against out-of-order load() responses
+      /* ── State ─────────────────────────────────────────────────────────────── */
+      let page = 1;
+      let pageSize = 10;
+      let searchTerm = "";
+      let rows = [];
+      let total = 0;
+      let loading = false;
+      let usersCache = null;      // active users for the assignee picker (loaded once)
+      let usersPromise = null;
+      let loadSeq = 0;            // guards against out-of-order load() responses
 
-  /* ── Header strip ──────────────────────────────────────────────────────── */
-  const strip = el(
-    '<div data-strip style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:4px">' +
-      '<div data-role="search" data-search style="width:100%;max-width:384px"></div>' +
-      '<button type="button" data-role="create" data-hover="btn-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 16px;border-radius:4px;border:0;background:#1d4ed8;color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:.15s">' +
-      icon("AiOutlinePlus", { size: 14 }) + "<span>Create Project</span></button>" +
-    "</div>",
-  );
-  const applySearch = App.debounce((value) => {
-    const next = value.trim();
-    if (next === searchTerm) return;
-    searchTerm = next;
-    page = 1;
-    load();
-  }, 300);
-  strip.querySelector('[data-role="search"]').appendChild(
-    App.searchBox({ placeholder: "Search projects by name or description...", onInput: applySearch }),
-  );
-  strip.querySelector('[data-role="create"]').addEventListener("click", () => openModal(null));
-  root.appendChild(strip);
-
-  /* ── Table panel ───────────────────────────────────────────────────────── */
-  const panel = el('<div style="' + tokens.GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"><div data-role="table"></div></div>');
-  const tableBox = panel.querySelector('[data-role="table"]');
-  root.appendChild(panel);
-
-  function renderAssignees(row) {
-    const users = row.assigned_users || [];
-    const ids = row.assigned_user_ids || users.map((u) => u.id);
-    const count = ids.length || users.length;
-    if (!count) return '<span style="font-size:12px;color:#94a3b8">Unassigned</span>';
-    const names = users.map((u) => u.full_name || u.email || "—");
-    const first = names[0] || "—";
-    return (
-      '<div style="display:flex;align-items:center;gap:6px;min-width:0">' +
-        '<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid #e2e8f0;background:#f8fafc;color:#334155;border-radius:4px;padding:2px 8px;font-size:12px;line-height:1.5;white-space:nowrap;flex-shrink:0">' +
-        icon("AiOutlineTeam", { size: 10 }) + escapeHtml(count + " assigned") + "</span>" +
-        '<span title="' + escapeHtml(names.join(", ")) + '" style="font-size:12px;color:#64748b;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-        escapeHtml(first) + (count > 1 ? escapeHtml(" +" + (count - 1)) : "") + "</span>" +
-      "</div>"
-    );
-  }
-
-  const ICON_BTN =
-    "display:inline-flex;align-items:center;justify-content:center;height:32px;width:32px;padding:0;border-radius:4px;border:0;background:transparent;cursor:pointer;transition:.15s;";
-
-  const columns = [
-    {
-      title: "#", width: 60, align: "center",
-      render: (_, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((page - 1) * pageSize + i + 1) + "</span>",
-    },
-    {
-      title: "Project",
-      render: (r) =>
-        '<div style="padding:2px 0;min-width:0">' +
-          '<span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(r.name) + "</span>" +
-          '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-          escapeHtml(r.description || "No description provided.") + "</span>" +
+      /* ── Header strip ──────────────────────────────────────────────────────── */
+      const strip = el(
+        '<div data-strip style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:4px">' +
+        '<div data-role="search" data-search style="width:100%;max-width:384px"></div>' +
+        '<button type="button" data-role="create" data-hover="btn-primary" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 16px;border-radius:4px;border:0;background:#1d4ed8;color:#fff;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:.15s">' +
+        icon("AiOutlinePlus", { size: 14 }) + "<span>Create Project</span></button>" +
         "</div>",
-    },
-    { title: "Media type", width: 120, render: (r) => App.pill(r.media_type || "—", "slate") },
-    { title: "Status", width: 130, render: (r) => App.statusPill(r.status || "active") },
-    {
-      title: "Queues", width: 90, align: "center",
-      render: (r) =>
-        '<span style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO + ';font-weight:700;font-size:12px;background:#f1f5f9;color:#334155;padding:2px 10px;border-radius:4px">' +
-        (Number(r.total_queues) || 0) + "</span>",
-    },
-    { title: "Assigned", width: 200, render: (r) => renderAssignees(r) },
-    { title: "Created", width: 130, render: (r) => '<span style="font-size:13px;color:#334155;white-space:nowrap">' + escapeHtml(fmt.date(r.created_at)) + "</span>" },
-    {
-      title: "Actions", width: 130, align: "center",
-      render: (r) => {
-        const cell = el(
-          '<div style="display:flex;justify-content:center;gap:4px">' +
-            '<button type="button" data-role="open" data-tip="Open project queues" data-hover="btn-text" style="' + ICON_BTN + 'color:#1d4ed8">' + icon("AiOutlineFolderOpen", { size: 15 }) + "</button>" +
-            '<button type="button" data-role="edit" data-tip="Edit project" data-hover="btn-text" style="' + ICON_BTN + 'color:#000">' + icon("AiOutlineEdit", { size: 15 }) + "</button>" +
-            '<button type="button" data-role="delete" data-tip="Delete project" data-hover="btn-danger-text" style="' + ICON_BTN + 'color:#e11d48">' + icon("AiOutlineDelete", { size: 15 }) + "</button>" +
+      );
+      const applySearch = App.debounce((value) => {
+        const next = value.trim();
+        if (next === searchTerm) return;
+        searchTerm = next;
+        page = 1;
+        load();
+      }, 300);
+      strip.querySelector('[data-role="search"]').appendChild(
+        App.searchBox({ placeholder: "Search projects by name or description...", onInput: applySearch }),
+      );
+      strip.querySelector('[data-role="create"]').addEventListener("click", () => openModal(null));
+      root.appendChild(strip);
+
+      /* ── Table panel ───────────────────────────────────────────────────────── */
+      const panel = el('<div style="' + tokens.GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"><div data-role="table"></div></div>');
+      const tableBox = panel.querySelector('[data-role="table"]');
+      root.appendChild(panel);
+
+      function renderAssignees(row) {
+        const users = row.assigned_users || [];
+        const ids = row.assigned_user_ids || users.map((u) => u.id);
+        const count = ids.length || users.length;
+        if (!count) return '<span style="font-size:12px;color:#94a3b8">Unassigned</span>';
+        const names = users.map((u) => u.full_name || u.email || "—");
+        const first = names[0] || "—";
+        return (
+          '<div style="display:flex;align-items:center;gap:6px;min-width:0">' +
+          '<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid #e2e8f0;background:#f8fafc;color:#334155;border-radius:4px;padding:2px 8px;font-size:12px;line-height:1.5;white-space:nowrap;flex-shrink:0">' +
+          icon("AiOutlineTeam", { size: 10 }) + escapeHtml(count + " assigned") + "</span>" +
+          '<span title="' + escapeHtml(names.join(", ")) + '" style="font-size:12px;color:#64748b;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          escapeHtml(first) + (count > 1 ? escapeHtml(" +" + (count - 1)) : "") + "</span>" +
+          "</div>"
+        );
+      }
+
+      const ICON_BTN =
+        "display:inline-flex;align-items:center;justify-content:center;height:32px;width:32px;padding:0;border-radius:4px;border:0;background:transparent;cursor:pointer;transition:.15s;";
+
+      const columns = [
+        {
+          title: "#", width: 60, align: "center",
+          render: (_, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((page - 1) * pageSize + i + 1) + "</span>",
+        },
+        {
+          title: "Project",
+          render: (r) =>
+            '<div style="padding:2px 0;min-width:0">' +
+            '<span style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(r.name) + "</span>" +
+            '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            escapeHtml(r.description || "No description provided.") + "</span>" +
+            "</div>",
+        },
+        { title: "Media type", width: 120, render: (r) => App.pill(r.media_type || "—", "slate") },
+        { title: "Status", width: 130, render: (r) => App.statusPill(r.status || "active") },
+        {
+          title: "Queues", width: 90, align: "center",
+          render: (r) =>
+            '<span style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO + ';font-weight:700;font-size:12px;background:#f1f5f9;color:#334155;padding:2px 10px;border-radius:4px">' +
+            (Number(r.total_queues) || 0) + "</span>",
+        },
+        { title: "Assigned", width: 200, render: (r) => renderAssignees(r) },
+        { title: "Created", width: 130, render: (r) => '<span style="font-size:13px;color:#334155;white-space:nowrap">' + escapeHtml(fmt.date(r.created_at)) + "</span>" },
+        {
+          title: "Actions", width: 130, align: "center",
+          render: (r) => {
+            const cell = el(
+              '<div style="display:flex;justify-content:center;gap:4px">' +
+              '<button type="button" data-role="open" data-tip="Open project queues" data-hover="btn-text" style="' + ICON_BTN + 'color:#1d4ed8">' + icon("AiOutlineFolderOpen", { size: 15 }) + "</button>" +
+              '<button type="button" data-role="edit" data-tip="Edit project" data-hover="btn-text" style="' + ICON_BTN + 'color:#000">' + icon("AiOutlineEdit", { size: 15 }) + "</button>" +
+              '<button type="button" data-role="delete" data-tip="Delete project" data-hover="btn-danger-text" style="' + ICON_BTN + 'color:#e11d48">' + icon("AiOutlineDelete", { size: 15 }) + "</button>" +
+              "</div>",
+            );
+            // Open: the Queues page filtered to this project (it reads ?project=<id>&project_name=<name>).
+            cell.querySelector('[data-role="open"]').addEventListener("click", () => {
+              const q = new URLSearchParams({ project: String(r.id || ""), project_name: String(r.name || "") });
+              location.href = "queues.html?" + q.toString();
+            });
+            cell.querySelector('[data-role="edit"]').addEventListener("click", () => openModal(r));
+            cell.querySelector('[data-role="delete"]').addEventListener("click", (e) => handleDelete(r, e.currentTarget));
+            return cell;
+          },
+        },
+      ];
+
+      function renderTable() {
+        App.table(tableBox, {
+          columns,
+          rows,
+          rowKey: "id",
+          loading,
+          emptyText: searchTerm ? "No projects match your search" : "No projects yet",
+          pagination: {
+            page, pageSize, total,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 25, 50, 100],
+            onChange: (nextPage, nextSize) => {
+              page = nextPage;
+              if (nextSize !== pageSize) { pageSize = nextSize; page = 1; }
+              load();
+            },
+          },
+        });
+      }
+
+      async function load() {
+        const seq = ++loadSeq;
+        loading = true;
+        renderTable();
+        try {
+          const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+          if (searchTerm) params.set("search", searchTerm);
+          const resp = await App.api("/projects/?" + params.toString());
+          if (seq !== loadSeq) return; // a newer load() has superseded this response
+          rows = Array.isArray(resp) ? resp : (resp && resp.items) || [];
+          total = Array.isArray(resp) ? resp.length : (resp && resp.total != null ? resp.total : rows.length);
+        } catch (err) {
+          if (seq !== loadSeq) return;
+          App.toast.error(err.message || "Unable to load projects.");
+        } finally {
+          if (seq === loadSeq) {
+            loading = false;
+            renderTable();
+          }
+        }
+      }
+
+      async function handleDelete(project, anchor) {
+        const ok = await App.popconfirm(anchor, {
+          title: "Delete this project?",
+          description: "Queues in this project keep working but lose their project link.",
+          okText: "Delete",
+          cancelText: "Cancel",
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          await App.api("/projects/" + encodeURIComponent(project.id), { method: "DELETE" });
+          App.toast.success("Project deleted.");
+          const remaining = Math.max(0, total - 1);
+          const lastPage = Math.max(1, Math.ceil(remaining / pageSize));
+          page = Math.min(page, lastPage);
+          load();
+        } catch (err) {
+          App.toast.error(err.message || "Unable to delete project.");
+        }
+      }
+
+      /* ── Users for the assignee picker (loaded once) ───────────────────────── */
+      function loadUsers() {
+        if (usersCache) return Promise.resolve(usersCache);
+        if (!usersPromise) {
+          usersPromise = App.api("/users/")
+            .then((resp) => {
+              const list = Array.isArray(resp) ? resp : (resp && resp.items) || [];
+              usersCache = list.filter((u) => u.is_active !== false);
+              return usersCache;
+            })
+            .catch((err) => {
+              usersPromise = null;
+              throw err;
+            });
+        }
+        return usersPromise;
+      }
+
+      /* ── Create / Edit modal ───────────────────────────────────────────────── */
+      function field(labelText, control, errorId) {
+        const wrap = el('<div style="margin-bottom:8px"><label style="' + LABEL_STYLE + '"></label></div>');
+        wrap.firstElementChild.textContent = labelText;
+        wrap.appendChild(control);
+        if (errorId) wrap.appendChild(el('<div data-error="' + errorId + '" style="' + ERROR_STYLE + '"></div>'));
+        return wrap;
+      }
+
+      function openModal(project) {
+        const isEdit = !!project;
+        let selected = new Set(isEdit ? (project.assigned_user_ids || (project.assigned_users || []).map((u) => u.id)) : []);
+        let userSearch = "";
+        let users = usersCache;
+        let usersFailed = false;
+
+        /* Basics */
+        const nameInput = el('<input type="text" placeholder="e.g. Prompt Attack Wave 3" data-hover="fieldfocus" style="' + tokens.INPUT_STYLE + '">');
+        nameInput.value = isEdit ? project.name || "" : "";
+        const descInput = el('<textarea rows="2" placeholder="Describe the scope of this project..." data-hover="fieldfocus" style="' + TEXTAREA_STYLE + '"></textarea>');
+        descInput.value = isEdit ? project.description || "" : "";
+
+        /* Settings */
+        const mediaSel = App.select({ options: MEDIA_TYPES, value: isEdit ? project.media_type || "image" : "image" });
+        const statusSel = App.select({ options: STATUSES, value: isEdit ? project.status || "active" : "active" });
+
+        /* Assigned users */
+        const countEl = el('<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#475569"><span style="color:#94a3b8">selected</span> 0</span>');
+        const shownEl = el('<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b">0 of 0 shown</span>');
+        const listEl = el('<div style="max-height:320px;overflow-y:auto;overflow-x:hidden"></div>');
+        const selectAll = App.checkbox({
+          label: '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#334155;white-space:nowrap">Select all</span>',
+          labelIsHtml: true,
+          onChange: (checked) => {
+            filtered().forEach((u) => { if (checked) selected.add(u.id); else selected.delete(u.id); });
+            renderUsers();
+          },
+        });
+        selectAll.style.marginLeft = "4px";
+        const userSearchBox = App.searchBox({
+          placeholder: "Search by name or email...",
+          onInput: (v) => { userSearch = v; renderUsers(); },
+        });
+
+        const filtered = () => {
+          const q = userSearch.trim().toLowerCase();
+          const all = users || [];
+          if (!q) return all;
+          return all.filter((u) => (u.full_name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q));
+        };
+
+        function renderUsers() {
+          // Preserve the picker scroll offset: clearing innerHTML collapses scrollHeight and clamps scrollTop to 0.
+          const prevScroll = listEl.scrollTop;
+          countEl.innerHTML = '<span style="color:#94a3b8">selected</span> ' + selected.size;
+          if (!users) {
+            shownEl.textContent = usersFailed ? "unavailable" : "loading";
+            listEl.innerHTML = usersFailed
+              ? App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Could not load users</span>')
+              : '<div style="padding:14px 12px">' + App.skeleton(4) + "</div>";
+            selectAll.input.checked = false;
+            selectAll.input.indeterminate = false;
+            selectAll.input.disabled = true;
+            listEl.scrollTop = prevScroll;
+            return;
+          }
+          const list = filtered();
+          shownEl.textContent = list.length + " of " + users.length + " shown";
+          const selCount = list.filter((u) => selected.has(u.id)).length;
+          const all = list.length > 0 && selCount === list.length;
+          selectAll.input.disabled = list.length === 0;
+          selectAll.input.checked = all;
+          selectAll.input.indeterminate = selCount > 0 && !all;
+
+          listEl.innerHTML = "";
+          if (!list.length) {
+            listEl.innerHTML =
+              '<div style="padding:24px 0">' +
+              App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">No users match the search</span>') +
+              "</div>";
+            listEl.scrollTop = prevScroll;
+            return;
+          }
+          list.forEach((u, idx) => {
+            const checked = selected.has(u.id);
+            const row = el(
+              '<label data-hover="userrow"' + (checked ? " data-checked" : "") + ' style="display:flex;align-items:center;gap:12px;padding:8px 12px;cursor:pointer;transition:background .15s;' +
+              (idx < list.length - 1 ? "border-bottom:1px solid #f1f5f9;" : "") + (checked ? "background:rgba(239,246,255,0.5);" : "") + '">' +
+              '<input type="checkbox" style="width:16px;height:16px;accent-color:#1d4ed8;cursor:pointer;margin:0;flex-shrink:0">' +
+              '<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;text-transform:uppercase;flex-shrink:0">' +
+              escapeHtml((u.full_name || u.email || "?").charAt(0)) + "</span>" +
+              '<span style="min-width:0;flex:1">' +
+              '<span style="display:block;font-size:14px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(u.full_name || u.email) + "</span>" +
+              '<span style="display:block;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(u.email || "") + "</span>" +
+              "</span>" +
+              (u.role_name ? '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;white-space:nowrap">' + escapeHtml(u.role_name) + "</span>" : "") +
+              "</label>",
+            );
+            const cb = row.querySelector("input");
+            cb.checked = checked;
+            cb.addEventListener("change", () => {
+              if (cb.checked) selected.add(u.id); else selected.delete(u.id);
+              renderUsers();
+            });
+            listEl.appendChild(row);
+          });
+          listEl.scrollTop = prevScroll;
+        }
+
+        /* Body */
+        const body = el('<div></div>');
+
+        const basics = el('<div style="margin-bottom:16px"><div style="margin-bottom:8px">' + App.sectionLabel("Basics") + "</div></div>");
+        basics.appendChild(field("Project Name", nameInput, "name"));
+        const descField = field("Description", descInput);
+        descField.style.marginBottom = "0";
+        basics.appendChild(descField);
+        body.appendChild(basics);
+
+        const settings = el('<div style="margin-bottom:16px"><div style="margin-bottom:8px">' + App.sectionLabel("Settings") + '</div><div data-role="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div></div>');
+        const grid = settings.querySelector('[data-role="grid"]');
+        const mediaField = field("Media Type", mediaSel);
+        const statusField = field("Status", statusSel);
+        mediaField.style.marginBottom = "0";
+        statusField.style.marginBottom = "0";
+        grid.appendChild(mediaField);
+        grid.appendChild(statusField);
+        body.appendChild(settings);
+
+        const assign = el(
+          '<div>' +
+          '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">' + App.sectionLabel("Assigned Users") + '<span data-role="count"></span></div>' +
+          '<div data-role="filter" style="display:flex;align-items:center;gap:8px;margin-bottom:12px"></div>' +
+          '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">' + App.sectionLabel("Users") + '<span data-role="shown"></span></div>' +
+          '<div data-role="list" style="border:1px solid #e2e8f0;border-radius:8px;background:#fff;overflow:hidden"></div>' +
+          '<div style="font-size:11px;color:#64748b;margin-top:8px">Assigned users can be picked when queues in this project are handed out.</div>' +
           "</div>",
         );
-        // Open: the Queues page filtered to this project (it reads ?project=<id>&project_name=<name>).
-        cell.querySelector('[data-role="open"]').addEventListener("click", () => {
-          const q = new URLSearchParams({ project: String(r.id || ""), project_name: String(r.name || "") });
-          location.href = "queues.html?" + q.toString();
+        assign.querySelector('[data-role="count"]').appendChild(countEl);
+        assign.querySelector('[data-role="filter"]').appendChild(userSearchBox);
+        assign.querySelector('[data-role="filter"]').appendChild(selectAll);
+        assign.querySelector('[data-role="shown"]').appendChild(shownEl);
+        assign.querySelector('[data-role="list"]').appendChild(listEl);
+        body.appendChild(assign);
+
+        const m = App.modal({
+          title: isEdit ? "Edit Project" : "Create Project",
+          subtitle: isEdit ? "Update project details and assignments" : "Group queues and pick who can work on them",
+          icon: isEdit ? "AiOutlineEdit" : "AiOutlinePlus",
+          iconTone: isEdit ? "amber" : "blue",
+          width: 560,
+          body,
         });
-        cell.querySelector('[data-role="edit"]').addEventListener("click", () => openModal(r));
-        cell.querySelector('[data-role="delete"]').addEventListener("click", (e) => handleDelete(r, e.currentTarget));
-        return cell;
-      },
-    },
-  ];
 
-  function renderTable() {
-    App.table(tableBox, {
-      columns,
-      rows,
-      rowKey: "id",
-      loading,
-      emptyText: searchTerm ? "No projects match your search" : "No projects yet",
-      pagination: {
-        page, pageSize, total,
-        showSizeChanger: true,
-        pageSizeOptions: [10, 25, 50, 100],
-        onChange: (nextPage, nextSize) => {
-          page = nextPage;
-          if (nextSize !== pageSize) { pageSize = nextSize; page = 1; }
-          load();
-        },
-      },
-    });
-  }
-
-  async function load() {
-    const seq = ++loadSeq;
-    loading = true;
-    renderTable();
-    try {
-      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-      if (searchTerm) params.set("search", searchTerm);
-      const resp = await App.api("/projects/?" + params.toString());
-      if (seq !== loadSeq) return; // a newer load() has superseded this response
-      rows = Array.isArray(resp) ? resp : (resp && resp.items) || [];
-      total = Array.isArray(resp) ? resp.length : (resp && resp.total != null ? resp.total : rows.length);
-    } catch (err) {
-      if (seq !== loadSeq) return;
-      App.toast.error(err.message || "Unable to load projects.");
-    } finally {
-      if (seq === loadSeq) {
-        loading = false;
-        renderTable();
-      }
-    }
-  }
-
-  async function handleDelete(project, anchor) {
-    const ok = await App.popconfirm(anchor, {
-      title: "Delete this project?",
-      description: "Queues in this project keep working but lose their project link.",
-      okText: "Delete",
-      cancelText: "Cancel",
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await App.api("/projects/" + encodeURIComponent(project.id), { method: "DELETE" });
-      App.toast.success("Project deleted.");
-      const remaining = Math.max(0, total - 1);
-      const lastPage = Math.max(1, Math.ceil(remaining / pageSize));
-      page = Math.min(page, lastPage);
-      load();
-    } catch (err) {
-      App.toast.error(err.message || "Unable to delete project.");
-    }
-  }
-
-  /* ── Users for the assignee picker (loaded once) ───────────────────────── */
-  function loadUsers() {
-    if (usersCache) return Promise.resolve(usersCache);
-    if (!usersPromise) {
-      usersPromise = App.api("/users/")
-        .then((resp) => {
-          const list = Array.isArray(resp) ? resp : (resp && resp.items) || [];
-          usersCache = list.filter((u) => u.is_active !== false);
-          return usersCache;
-        })
-        .catch((err) => {
-          usersPromise = null;
-          throw err;
+        const footer = App.modalFooterButtons({
+          cancelText: "Cancel",
+          okText: isEdit ? "Save Changes" : "Create Project",
+          okTone: "blue",
+          onCancel: () => m.close(),
+          onOk: submit,
         });
-    }
-    return usersPromise;
-  }
+        m.setFooter(footer);
 
-  /* ── Create / Edit modal ───────────────────────────────────────────────── */
-  function field(labelText, control, errorId) {
-    const wrap = el('<div style="margin-bottom:8px"><label style="' + LABEL_STYLE + '"></label></div>');
-    wrap.firstElementChild.textContent = labelText;
-    wrap.appendChild(control);
-    if (errorId) wrap.appendChild(el('<div data-error="' + errorId + '" style="' + ERROR_STYLE + '"></div>'));
-    return wrap;
-  }
-
-  function openModal(project) {
-    const isEdit = !!project;
-    let selected = new Set(isEdit ? (project.assigned_user_ids || (project.assigned_users || []).map((u) => u.id)) : []);
-    let userSearch = "";
-    let users = usersCache;
-    let usersFailed = false;
-
-    /* Basics */
-    const nameInput = el('<input type="text" placeholder="e.g. Prompt Attack Wave 3" data-hover="fieldfocus" style="' + tokens.INPUT_STYLE + '">');
-    nameInput.value = isEdit ? project.name || "" : "";
-    const descInput = el('<textarea rows="2" placeholder="Describe the scope of this project..." data-hover="fieldfocus" style="' + TEXTAREA_STYLE + '"></textarea>');
-    descInput.value = isEdit ? project.description || "" : "";
-
-    /* Settings */
-    const mediaSel = App.select({ options: MEDIA_TYPES, value: isEdit ? project.media_type || "image" : "image" });
-    const statusSel = App.select({ options: STATUSES, value: isEdit ? project.status || "active" : "active" });
-
-    /* Assigned users */
-    const countEl = el('<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#475569"><span style="color:#94a3b8">selected</span> 0</span>');
-    const shownEl = el('<span style="font-size:10px;font-family:' + MONO + ';text-transform:uppercase;letter-spacing:.05em;color:#64748b">0 of 0 shown</span>');
-    const listEl = el('<div style="max-height:320px;overflow-y:auto;overflow-x:hidden"></div>');
-    const selectAll = App.checkbox({
-      label: '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#334155;white-space:nowrap">Select all</span>',
-      labelIsHtml: true,
-      onChange: (checked) => {
-        filtered().forEach((u) => { if (checked) selected.add(u.id); else selected.delete(u.id); });
         renderUsers();
-      },
-    });
-    selectAll.style.marginLeft = "4px";
-    const userSearchBox = App.searchBox({
-      placeholder: "Search by name or email...",
-      onInput: (v) => { userSearch = v; renderUsers(); },
-    });
+        loadUsers()
+          .then((list) => { users = list; renderUsers(); })
+          .catch((err) => { usersFailed = true; renderUsers(); App.toast.error(err.message || "Unable to load users."); });
+        setTimeout(() => nameInput.focus(), 50);
 
-    const filtered = () => {
-      const q = userSearch.trim().toLowerCase();
-      const all = users || [];
-      if (!q) return all;
-      return all.filter((u) => (u.full_name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q));
-    };
+        const nameError = body.querySelector('[data-error="name"]');
+        const showNameError = (msg) => {
+          nameError.textContent = msg || "";
+          nameError.style.display = msg ? "block" : "none";
+          nameInput.style.borderColor = msg ? "#f43f5e" : "";
+        };
+        nameInput.addEventListener("input", () => { if (nameError.style.display !== "none") showNameError(""); });
+        nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
 
-    function renderUsers() {
-      // Preserve the picker scroll offset: clearing innerHTML collapses scrollHeight and clamps scrollTop to 0.
-      const prevScroll = listEl.scrollTop;
-      countEl.innerHTML = '<span style="color:#94a3b8">selected</span> ' + selected.size;
-      if (!users) {
-        shownEl.textContent = usersFailed ? "unavailable" : "loading";
-        listEl.innerHTML = usersFailed
-          ? App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Could not load users</span>')
-          : '<div style="padding:14px 12px">' + App.skeleton(4) + "</div>";
-        selectAll.input.checked = false;
-        selectAll.input.indeterminate = false;
-        selectAll.input.disabled = true;
-        listEl.scrollTop = prevScroll;
-        return;
-      }
-      const list = filtered();
-      shownEl.textContent = list.length + " of " + users.length + " shown";
-      const selCount = list.filter((u) => selected.has(u.id)).length;
-      const all = list.length > 0 && selCount === list.length;
-      selectAll.input.disabled = list.length === 0;
-      selectAll.input.checked = all;
-      selectAll.input.indeterminate = selCount > 0 && !all;
-
-      listEl.innerHTML = "";
-      if (!list.length) {
-        listEl.innerHTML =
-          '<div style="padding:24px 0">' +
-          App.emptyState('<span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">No users match the search</span>') +
-          "</div>";
-        listEl.scrollTop = prevScroll;
-        return;
-      }
-      list.forEach((u, idx) => {
-        const checked = selected.has(u.id);
-        const row = el(
-          '<label data-hover="userrow"' + (checked ? " data-checked" : "") + ' style="display:flex;align-items:center;gap:12px;padding:8px 12px;cursor:pointer;transition:background .15s;' +
-            (idx < list.length - 1 ? "border-bottom:1px solid #f1f5f9;" : "") + (checked ? "background:rgba(239,246,255,0.5);" : "") + '">' +
-            '<input type="checkbox" style="width:16px;height:16px;accent-color:#1d4ed8;cursor:pointer;margin:0;flex-shrink:0">' +
-            '<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;text-transform:uppercase;flex-shrink:0">' +
-            escapeHtml((u.full_name || u.email || "?").charAt(0)) + "</span>" +
-            '<span style="min-width:0;flex:1">' +
-            '<span style="display:block;font-size:14px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(u.full_name || u.email) + "</span>" +
-            '<span style="display:block;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(u.email || "") + "</span>" +
-            "</span>" +
-            (u.role_name ? '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;white-space:nowrap">' + escapeHtml(u.role_name) + "</span>" : "") +
-          "</label>",
-        );
-        const cb = row.querySelector("input");
-        cb.checked = checked;
-        cb.addEventListener("change", () => {
-          if (cb.checked) selected.add(u.id); else selected.delete(u.id);
-          renderUsers();
-        });
-        listEl.appendChild(row);
-      });
-      listEl.scrollTop = prevScroll;
-    }
-
-    /* Body */
-    const body = el('<div></div>');
-
-    const basics = el('<div style="margin-bottom:16px"><div style="margin-bottom:8px">' + App.sectionLabel("Basics") + "</div></div>");
-    basics.appendChild(field("Project Name", nameInput, "name"));
-    const descField = field("Description", descInput);
-    descField.style.marginBottom = "0";
-    basics.appendChild(descField);
-    body.appendChild(basics);
-
-    const settings = el('<div style="margin-bottom:16px"><div style="margin-bottom:8px">' + App.sectionLabel("Settings") + '</div><div data-role="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div></div>');
-    const grid = settings.querySelector('[data-role="grid"]');
-    const mediaField = field("Media Type", mediaSel);
-    const statusField = field("Status", statusSel);
-    mediaField.style.marginBottom = "0";
-    statusField.style.marginBottom = "0";
-    grid.appendChild(mediaField);
-    grid.appendChild(statusField);
-    body.appendChild(settings);
-
-    const assign = el(
-      '<div>' +
-        '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">' + App.sectionLabel("Assigned Users") + '<span data-role="count"></span></div>' +
-        '<div data-role="filter" style="display:flex;align-items:center;gap:8px;margin-bottom:12px"></div>' +
-        '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">' + App.sectionLabel("Users") + '<span data-role="shown"></span></div>' +
-        '<div data-role="list" style="border:1px solid #e2e8f0;border-radius:8px;background:#fff;overflow:hidden"></div>' +
-        '<div style="font-size:11px;color:#64748b;margin-top:8px">Assigned users can be picked when queues in this project are handed out.</div>' +
-      "</div>",
-    );
-    assign.querySelector('[data-role="count"]').appendChild(countEl);
-    assign.querySelector('[data-role="filter"]').appendChild(userSearchBox);
-    assign.querySelector('[data-role="filter"]').appendChild(selectAll);
-    assign.querySelector('[data-role="shown"]').appendChild(shownEl);
-    assign.querySelector('[data-role="list"]').appendChild(listEl);
-    body.appendChild(assign);
-
-    const m = App.modal({
-      title: isEdit ? "Edit Project" : "Create Project",
-      subtitle: isEdit ? "Update project details and assignments" : "Group queues and pick who can work on them",
-      icon: isEdit ? "AiOutlineEdit" : "AiOutlinePlus",
-      iconTone: isEdit ? "amber" : "blue",
-      width: 560,
-      body,
-    });
-
-    const footer = App.modalFooterButtons({
-      cancelText: "Cancel",
-      okText: isEdit ? "Save Changes" : "Create Project",
-      okTone: "blue",
-      onCancel: () => m.close(),
-      onOk: submit,
-    });
-    m.setFooter(footer);
-
-    renderUsers();
-    loadUsers()
-      .then((list) => { users = list; renderUsers(); })
-      .catch((err) => { usersFailed = true; renderUsers(); App.toast.error(err.message || "Unable to load users."); });
-    setTimeout(() => nameInput.focus(), 50);
-
-    const nameError = body.querySelector('[data-error="name"]');
-    const showNameError = (msg) => {
-      nameError.textContent = msg || "";
-      nameError.style.display = msg ? "block" : "none";
-      nameInput.style.borderColor = msg ? "#f43f5e" : "";
-    };
-    nameInput.addEventListener("input", () => { if (nameError.style.display !== "none") showNameError(""); });
-    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
-
-    async function submit() {
-      // Re-entrancy guard: the Enter-key path bypasses the disabled footer button.
-      if (footer.okBtn.disabled || footer.okBtn.dataset.loading === "1") return;
-      const name = nameInput.value.trim();
-      if (name.length < 2) { showNameError("Required"); nameInput.focus(); return; }
-      showNameError("");
-      const payload = {
-        name,
-        description: descInput.value.trim(),
-        media_type: mediaSel.value || "image",
-        status: statusSel.value || "active",
-        assigned_user_ids: Array.from(selected),
-      };
-      App.setLoading(footer.okBtn, true);
-      try {
-        if (isEdit) {
-          await App.api("/projects/" + encodeURIComponent(project.id), { method: "PUT", body: payload });
-          App.toast.success("Project updated.");
-        } else {
-          await App.api("/projects/", { method: "POST", body: payload });
-          App.toast.success("Project created.");
+        async function submit() {
+          // Re-entrancy guard: the Enter-key path bypasses the disabled footer button.
+          if (footer.okBtn.disabled || footer.okBtn.dataset.loading === "1") return;
+          const name = nameInput.value.trim();
+          if (name.length < 2) { showNameError("Required"); nameInput.focus(); return; }
+          showNameError("");
+          const payload = {
+            name,
+            description: descInput.value.trim(),
+            media_type: mediaSel.value || "image",
+            status: statusSel.value || "active",
+            assigned_user_ids: Array.from(selected),
+          };
+          App.setLoading(footer.okBtn, true);
+          try {
+            if (isEdit) {
+              await App.api("/projects/" + encodeURIComponent(project.id), { method: "PUT", body: payload });
+              App.toast.success("Project updated.");
+            } else {
+              await App.api("/projects/", { method: "POST", body: payload });
+              App.toast.success("Project created.");
+            }
+            m.close();
+            load();
+          } catch (err) {
+            App.toast.error(err.message || "Unable to save project.");
+          } finally {
+            App.setLoading(footer.okBtn, false);
+          }
         }
-        m.close();
-        load();
-      } catch (err) {
-        App.toast.error(err.message || "Unable to save project.");
-      } finally {
-        App.setLoading(footer.okBtn, false);
       }
-    }
-  }
 
-  load();
-})();
-</script>
+      load();
+    })();
+  </script>
 </body>
+
 </html>

@@ -1,3 +1,4 @@
+import random
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
@@ -9,9 +10,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.core.ratelimit import login_limiter
 from app.core.security import get_password_hash, verify_password
 from app.crud.user import get_user_by_email, get_user_by_id
 from app.models.user import User
+from app.repositories.user_session_repository import UserSessionRepository
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import UserProfileResponse
 from app.services.auth_service import AuthService
@@ -46,9 +49,22 @@ def login(
     response: Response,
     db: Annotated[Session, Depends(get_db)],
 ) -> TokenResponse:
+    # Rate limit BEFORE the password hash so a brute-force attempt cannot
+    # monopolise the thread pool at shift start.
+    client_ip = request.client.host if request.client else "?"
+    limit_key = f"{client_ip}|{payload.email.lower()}"
+    if not login_limiter.allow(limit_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait a minute and try again.",
+        )
     user = get_user_by_email(db, payload.email.lower())
     if not user or not verify_password(payload.password, user["hashed_password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    login_limiter.reset(limit_key)
+    # Housekeeping: drop long-dead sessions now and then (indexed DELETE).
+    if random.random() < 0.02:
+        UserSessionRepository.cleanup_expired_sessions(db, grace_days=1)
     if not user["is_active"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
     assigned_role = user.get("assigned_role")

@@ -14,7 +14,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903v"></script>
+<script src="js/icons.js?v=20260903y"></script>
+<script src="js/app.js?v=20260903y"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -497,7 +498,7 @@
   let taxonomyPromise = null;
   function loadTaxonomy() {
     if (!taxonomyPromise) {
-      taxonomyPromise = App.api("/annotation/taxonomy").then(buildLabelMap).catch(() => ({}));
+      taxonomyPromise = App.taxonomy().then(buildLabelMap).catch(() => ({}));
     }
     return taxonomyPromise;
   }

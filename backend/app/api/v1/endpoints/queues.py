@@ -29,7 +29,7 @@ from app.schemas.queue import (
     QueueUpdateRequest,
     TaskResponse,
 )
-from app.services.export import EXPORT_SCOPES, export_queue, resolve_production_queue
+from app.services.export import EXPORT_SCOPES, resolve_production_queue, stream_export_response
 from app.services.sheet_import import MAX_SHEET_BYTES, parse_sheet
 
 router = APIRouter()
@@ -125,17 +125,18 @@ def add_queue(
 
 
 @router.post("/parse-sheet")
-async def parse_queue_sheet(
+def parse_queue_sheet(
     _: Annotated[dict, Depends(require_permission("queues"))],
     file: UploadFile = File(...),
     name_prefix: str | None = Form(default=None),
 ) -> dict:
     """Turn an uploaded .xlsx/.csv of prompts into the task rows the Create
     Queue modal previews and then posts back as ``tasks``. Nothing is
-    persisted here."""
+    persisted here. Plain ``def`` on purpose: openpyxl parsing is CPU work and
+    must run on the thread pool, never on the event loop."""
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No file provided")
-    content = await file.read()
+    content = file.file.read(MAX_SHEET_BYTES + 1)
     if len(content) > MAX_SHEET_BYTES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -160,12 +161,9 @@ def _export(db: Session, queue_id: str, fmt: str, scope: str, current_user: dict
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="scope must be one of: final, all",
         )
-    body, media_type, filename = export_queue(db, queue, fmt, scope)
-    return Response(
-        content=body,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    # Streamed: rows are read in pages and written out as they are produced,
+    # so a 10,000-task export keeps memory flat and starts downloading at once.
+    return stream_export_response(queue, fmt, scope)
 
 
 @router.get("/{queue_id}/export/jsonl")

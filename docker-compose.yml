@@ -3,10 +3,24 @@ services:
     image: postgres:16-alpine
     container_name: promptattack_db
     restart: always
+    # Tuned for ~4 API workers x 20 connections plus admin tools, on a host
+    # with >= 4 GB RAM. Adjust shared_buffers/effective_cache_size to ~25% /
+    # ~60% of the RAM you give Postgres.
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=128MB
+      -c wal_buffers=16MB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=1.1
+      -c log_min_duration_statement=500
     environment:
       POSTGRES_DB: annotation_tool_promptattack
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "1234"
+      POSTGRES_PASSWORD: "${DB_PASS:-1234}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -23,28 +37,39 @@ services:
       dockerfile: Dockerfile
     container_name: promptattack_backend
     restart: always
-    # The image's default CMD serves on port 8000 with no migrations. For
-    # compose, run migrations first and serve on 8005 (the port the frontend
-    # nginx proxies to and the healthcheck below probes). The DB wait is
-    # handled by depends_on: service_healthy. Migrations are non-fatal (same as
-    # entrypoint.sh): the app also ensures the schema at startup.
-    command: sh -c "alembic upgrade head || echo 'alembic failed; continuing'; exec uvicorn app.main:app --host 0.0.0.0 --port 8005"
+    # Run migrations first, then serve on 8005 (the port the frontend nginx
+    # proxies to and the healthcheck below probes) with several gunicorn/uvicorn
+    # worker processes. The DB wait is handled by depends_on: service_healthy.
+    # Migrations are non-fatal (same as entrypoint.sh): the app also ensures the
+    # schema at startup, idempotently and under an advisory lock.
+    command: sh -c "alembic upgrade head || echo 'alembic failed; continuing'; export PORT=8005; exec gunicorn -c gunicorn.conf.py app.main:app"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     environment:
       APP_NAME: Prompt Attack Annotation Platform API
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: annotation_tool_promptattack
       DB_USER: postgres
-      DB_PASS: "1234"
+      DB_PASS: "${DB_PASS:-1234}"
       MAINTENANCE_DB: postgres
+      # Capacity: WEB_CONCURRENCY x (DB_POOL_SIZE + DB_MAX_OVERFLOW) must stay
+      # below Postgres max_connections (200 above): 4 x 20 = 80.
+      WEB_CONCURRENCY: "${WEB_CONCURRENCY:-4}"
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "10"
+      SECRET_KEY: "${SECRET_KEY:-CHANGE_ME_TO_A_LONG_RANDOM_VALUE}"
       UPLOAD_FOLDER: uploads
       # Static frontend is also mounted into the backend so the API host serves
       # the app same-origin at http://localhost:8005/ (the nginx frontend
       # service on port 80 is the primary entry point).
       FRONTEND_DIR: /app/frontend
       CORS_ORIGINS: http://localhost,http://127.0.0.1,http://localhost:8005,http://127.0.0.1:8005
-      DEFAULT_ADMIN_EMAIL: admin@gmail.com
-      DEFAULT_ADMIN_PASSWORD: Admin@123
+      DEFAULT_ADMIN_EMAIL: "${DEFAULT_ADMIN_EMAIL:-admin@gmail.com}"
+      # Used only when the account does not exist yet; never rewritten on restart.
+      DEFAULT_ADMIN_PASSWORD: "${DEFAULT_ADMIN_PASSWORD:-Admin@123}"
     volumes:
       - backend_uploads:/app/uploads
       - ./frontend:/app/frontend:ro

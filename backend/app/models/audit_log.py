@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, datetime
-from sqlalchemy import Column, String, DateTime, ForeignKey
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.models.base import Base
@@ -19,3 +19,7 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=utc_now)
 
     user = relationship("User")
+
+
+# The dashboard reads the newest rows on every poll; without this the sort is a full scan.
+Index("ix_audit_logs_timestamp", AuditLog.timestamp)

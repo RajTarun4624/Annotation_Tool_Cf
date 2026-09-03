@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
+from app.core.cache import user_cache
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import ALGORITHM
@@ -31,7 +32,14 @@ def get_current_user(
     except JWTError as exc:
         raise credentials_exception from exc
 
-    user = get_user_by_id(db, user_id)
+    # Every request pays this lookup; a short per-process cache turns the
+    # user + role queries into a dict hit. Deactivation / permission changes
+    # take effect within USER_CACHE_SECONDS.
+    user = user_cache.get(user_id)
+    if user is None:
+        user = get_user_by_id(db, user_id)
+        if user:
+            user_cache.set(user_id, user, settings.USER_CACHE_SECONDS)
     if not user:
         raise credentials_exception
     if not user.get("is_active", True):

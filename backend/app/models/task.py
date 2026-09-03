@@ -67,6 +67,11 @@ class Task(Base):
     finalized_by_name = Column(String, nullable=True)
     finalized_at = Column(DateTime, nullable=True)
     qa_queue_id = Column(UUID(as_uuid=True), ForeignKey("queues.id", ondelete="SET NULL"), nullable=True)
+    # QA lease: the reviewer who currently holds the task (set by the QA claim
+    # endpoint) and their last heartbeat. Another reviewer may take over once
+    # the lease is older than CLAIM_LEASE_SECONDS.
+    qa_owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    qa_owner_seen_at = Column(DateTime, nullable=True)
 
     # Relationships
     queue = relationship("Queue", back_populates="tasks", foreign_keys=[queue_id])
@@ -91,3 +96,8 @@ Index("ix_tasks_batch_name", Task.batch_name)
 Index("ix_tasks_environment", Task.environment)
 Index("ix_tasks_dataset", Task.dataset)
 Index("ix_tasks_qa_queue_id", Task.qa_queue_id)
+# Composite indexes for the claim / queue-summary queries (queue + status is the
+# filter every workspace path uses; the QA pair covers the review pick).
+Index("ix_tasks_queue_status", Task.queue_id, Task.status)
+Index("ix_tasks_qa_queue_status", Task.qa_queue_id, Task.status)
+Index("ix_tasks_qa_owner_id", Task.qa_owner_id)

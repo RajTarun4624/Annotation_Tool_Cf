@@ -1,11 +1,14 @@
+import random
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
 from app.models.user import User
+
+AUDIT_RETENTION_DAYS = 90
 
 
 def create_audit_log(
@@ -34,6 +37,12 @@ def create_audit_log(
     db.add(log)
     db.commit()
     db.refresh(log)
+    # Retention: the table is append-only and read newest-first; trim rows
+    # older than AUDIT_RETENTION_DAYS now and then (indexed on timestamp).
+    if random.random() < 0.005:
+        cutoff = datetime.now(UTC) - timedelta(days=AUDIT_RETENTION_DAYS)
+        db.query(AuditLog).filter(AuditLog.timestamp < cutoff).delete(synchronize_session=False)
+        db.commit()
     return log
 
 

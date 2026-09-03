@@ -15,8 +15,9 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903v"></script>
-<script src="js/annotation-form.js?v=20260903v"></script>
+<script src="js/icons.js?v=20260903y"></script>
+<script src="js/app.js?v=20260903y"></script>
+<script src="js/annotation-form.js?v=20260903y"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -86,7 +87,7 @@
       '<div style="display:flex;align-items:center;gap:12px;font-size:13px;color:#000000;white-space:nowrap;flex-shrink:0">' +
         '<span>Hello, <strong data-role="user-name" style="color:#000000;font-weight:700">' + esc(userEmail) + "</strong></span>" +
         '<span style="color:#cbd5e1;font-weight:300">|</span>' +
-        '<span>Task ID: <strong data-role="task-id" style="font-family:' + T.MONO + ';color:#000000;font-weight:700">—</strong></span>' +
+        '<span style="display:inline-flex;align-items:center;gap:8px">Task ID: <strong data-role="task-id" style="font-family:' + T.MONO + ';color:#000000;font-weight:700">—</strong><span data-slot="info" style="display:inline-flex"></span></span>' +
         '<span style="color:#cbd5e1;font-weight:300">|</span>' +
         '<span style="white-space:nowrap">Task time: <strong data-role="timer-display" style="font-family:' + T.MONO + ';color:#1d4ed8;font-weight:700;letter-spacing:0.02em">00:00</strong> <span data-role="timer-total" style="color:#334155;font-weight:600">of 120 Min 00 Sec</span></span>' +
       "</div>" +
@@ -164,6 +165,21 @@
   else if (typeof narrowQuery.addListener === "function") narrowQuery.addListener(placeFormBlock);
   placeFormBlock();
 
+  /* ── Header "i" icon: queue name, queue type (Prod / QA), task name, task ID ── */
+  const infoBtn = App.infoButton({ label: "Queue and task details" });
+  App.qs('[data-slot="info"]', topBar).appendChild(infoBtn);
+  App.infoDropdown(infoBtn, () => {
+    const q = state.queue || {};
+    const cur = (state.current && state.current.task) || {};
+    const isQA = (q.annotation_type || "production") === "qa";
+    return [
+      { label: "Queue", value: q.name || "—" },
+      { label: "Type", html: App.pill(isQA ? "QA" : "Prod", isQA ? "purple" : "blue") },
+      { label: "Task name", value: q.task_name || cur.dataset || "—" },
+      { label: "Task ID", value: els.taskId.textContent || "—", mono: true },
+    ];
+  });
+
   /* ── Helpers ─────────────────────────────────────────────────────────────── */
   function fmtClock(seconds) {
     const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -212,6 +228,7 @@
     if (state.timerId) clearInterval(state.timerId);
     state.timerId = null;
     state.timerRunning = false;
+    rememberElapsed();
     paintTimer();
   }
   function startTimer() {
@@ -222,9 +239,62 @@
       if (document.visibilityState === "hidden") return;
       state.elapsed += 1;
       els.timerDisplay.textContent = fmtClock(state.elapsed);
-      rememberElapsed();
+      // Persist every 10 s (a synchronous storage write per second is wasteful);
+      // stopTimer() and the hidden-tab handler flush the exact value.
+      if (state.elapsed % 10 === 0) rememberElapsed();
     }, 1000);
     paintTimer();
+  }
+
+  /* ── Claim lease heartbeat ───────────────────────────────────────────────
+     The server hands out tasks as short leases. While a task is open and the
+     tab is visible we extend the lease every 60 s; an abandoned tab therefore
+     frees its task automatically after CLAIM_LEASE_SECONDS on the server. ── */
+  const HEARTBEAT_MS = 60000;
+  let heartbeatId = null;
+  async function heartbeat() {
+    if (!state.currentId || !isEditable() || document.visibilityState === "hidden") return;
+    const taskId = state.currentId;
+    try {
+      const res = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/heartbeat", { method: "POST", redirectOnAuthFail: false });
+      if (taskId !== state.currentId || !res) return;
+      if (res.editable === false && isEditable()) {
+        state.current.editable = false;
+        if (state.form) state.form.setReadOnly(true);
+        stopTimer();
+        paintBanner();
+        App.toast.info("This task was completed by other annotators and is now read-only.");
+      }
+    } catch (e) { /* transient: the next beat retries */ }
+  }
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatId = setInterval(heartbeat, HEARTBEAT_MS);
+  }
+  function stopHeartbeat() {
+    if (heartbeatId) clearInterval(heartbeatId);
+    heartbeatId = null;
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") rememberElapsed();
+    else heartbeat();
+  });
+
+  /* ── Conflict (409): someone else got there first → explain and move on ── */
+  async function goToNextTask() {
+    try {
+      const res = await App.api("/workspace/queues/" + encodeURIComponent(queueId) + "/next");
+      if (res && res.task_id) await openTask(res.task_id);
+      else renderCompletedQueue();
+    } catch (err) {
+      App.toast.error(err.message || "Unable to fetch the next task.");
+    }
+  }
+  function isConflict(err) { return !!(err && err.status === 409); }
+  async function handleConflict(err, taskId) {
+    App.toast.warning(err.message || "Another annotator got there first.");
+    forgetElapsed(taskId);
+    await goToNextTask();
   }
 
   /* ── Top bar ─────────────────────────────────────────────────────────────── */
@@ -396,7 +466,7 @@
   }
 
   /* ── Draft saving ────────────────────────────────────────────────────────── */
-  const autosave = App.debounce(() => { saveDraft({ silent: true }); }, 1500);
+  const autosave = App.debounce(() => { saveDraft({ silent: true }); }, 3000);
 
   function onFormChange() {
     if (!isEditable()) return;
@@ -409,6 +479,15 @@
   function applyPayload(payload) {
     if (!payload || !payload.task) return;
     state.current = { task: payload.task, my_annotation: payload.my_annotation || null, editable: !!payload.editable };
+  }
+  // Autosave returns a slim acknowledgement (no prompt text): merge it into the
+  // current task instead of replacing it.
+  function applySaveAck(ack) {
+    if (!ack || !state.current || !state.current.task) return;
+    if (ack.status) state.current.task.status = ack.status;
+    if (ack.submitted_count != null) state.current.task.submitted_count = ack.submitted_count;
+    state.current.my_annotation = ack.my_annotation || state.current.my_annotation;
+    state.current.editable = !!ack.editable;
   }
 
   async function awaitPendingSave() {
@@ -427,13 +506,13 @@
     if (!o.silent) App.setLoading(els.save, true);
     state.savePromise = (async () => {
       try {
-        const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/draft", {
+        const ack = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/draft", {
           method: "PUT",
           body: { data, elapsed_seconds: Math.floor(state.elapsed) },
         });
         if (seq !== state.loadSeq || taskId !== state.currentId) return true;
         const wasEditable = isEditable();
-        applyPayload(payload);
+        applySaveAck(ack);
         state.lastSavedJson = json;
         state.dirty = currentValueJson() !== json;
         if (wasEditable !== isEditable()) { state.form.setReadOnly(!isEditable()); startTimer(); }
@@ -442,7 +521,9 @@
         if (!o.silent) App.toast.success("Draft saved.");
         return true;
       } catch (err) {
-        if (seq === state.loadSeq) App.toast.error(err.message);
+        if (seq !== state.loadSeq) return false;
+        if (isConflict(err)) { handleConflict(err, taskId); return false; }
+        App.toast.error(err.message);
         return false;
       } finally {
         state.saving = false;
@@ -545,7 +626,10 @@
     } catch (err) {
       if (seq !== state.loadSeq) return;
       const list = err && err.payload && Array.isArray(err.payload.errors) ? err.payload.errors.map(String) : null;
-      if (list && list.length) {
+      if (isConflict(err)) {
+        setSubmitting(false);
+        await handleConflict(err, taskId);
+      } else if (list && list.length) {
         showSubmitErrors(list);
         App.toast.error(list.length === 1 ? list[0] : "Submission rejected: " + list.length + " issues.");
       } else {
@@ -670,6 +754,7 @@
         method: "POST",
       });
       App.toast.info("Task skipped.");
+      forgetElapsed(taskId);
       if (res && res.next_task_id) {
         await openTask(res.next_task_id);
       } else {
@@ -713,16 +798,20 @@
   function renderCompletedQueue() {
     // Nothing left for this user here: leave the workspace and go back to Annotation Queues.
     stopTimer();
+    stopHeartbeat();
     state.currentId = null;
     if (state.form) { state.form.destroy(); state.form = null; }
-    App.toast.success("All tasks in this queue are done. Returning to annotation queues...");
+    App.toast.success("No task is available for you in this queue right now. Returning to annotation queues...");
     setTimeout(() => { location.href = "annotation-queues.html"; }, 700);
   }
 
   /* ── Task loading ────────────────────────────────────────────────────────── */
+  // The task id always comes from a claim (/next, submit, skip, decline) or the
+  // URL; the server already reserved it for this user, so opening is one GET.
   async function openTask(taskId) {
     autosave.cancel();
     stopTimer();
+    stopHeartbeat();
     state.currentId = taskId;
     state.loadSeq += 1;
     const seq = state.loadSeq;
@@ -735,20 +824,8 @@
     if (state.form) { state.form.destroy(); state.form = null; }
     els.form.innerHTML = App.skeleton(8);
     try {
-      let payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId));
+      const payload = await App.api("/workspace/tasks/" + encodeURIComponent(taskId));
       if (seq !== state.loadSeq) return;
-      // Claim: an empty draft marks the task as taken, so the server steers other
-      // annotators to a different task. Skip/Release drop the claim again.
-      if (payload && payload.editable && !payload.my_annotation) {
-        try {
-          const claimed = await App.api("/workspace/tasks/" + encodeURIComponent(taskId) + "/draft", {
-            method: "PUT",
-            body: { data: {}, elapsed_seconds: 0 },
-          });
-          if (seq !== state.loadSeq) return;
-          if (claimed && claimed.task) payload = claimed;
-        } catch (e) { /* claim is best-effort */ }
-      }
       applyPayload(payload);
       state.elapsed = Math.max(Number(payload.my_annotation && payload.my_annotation.elapsed_seconds) || 0, recallElapsed(taskId));
       paintCentre();
@@ -756,6 +833,7 @@
       paintBanner();
       paintTopBar();
       startTimer();
+      if (isEditable()) startHeartbeat();
     } catch (err) {
       if (seq !== state.loadSeq) return;
       state.current = null;
@@ -769,10 +847,12 @@
   }
 
   /* ── Queue loading ───────────────────────────────────────────────────────── */
+  // Counts only: the workspace never downloads the task list (a queue may hold
+  // thousands of prompts); the server hands out one claimed task at a time.
   async function loadQueue() {
-    const data = await App.api("/workspace/queues/" + encodeURIComponent(queueId));
+    const data = await App.api("/workspace/queues/" + encodeURIComponent(queueId) + "/summary");
     state.queue = data.queue || null;
-    state.allTasks = Array.isArray(data.tasks) ? data.tasks.slice().sort((a, b) => (a.sequence || 0) - (b.sequence || 0)) : [];
+    state.summary = data;
   }
 
   /* ── Wire up buttons ─────────────────────────────────────────────────────── */
@@ -806,7 +886,7 @@
   els.centreBody.innerHTML = App.skeleton(6);
   els.form.innerHTML = App.skeleton(8);
 
-  const taxonomyRequest = App.api("/annotation/taxonomy").catch(() => {
+  const taxonomyRequest = App.taxonomy().catch(() => {
     App.toast.warning("Taxonomy unavailable — using built-in defaults.");
     return null;
   });
@@ -824,20 +904,20 @@
 
   state.taxonomy = await taxonomyRequest;
 
-  // Pick task to open: the requested task, else ask the server for the least-loaded
-  // available task (it resumes this user's own draft first). Fallback: a local pick.
-  const LOCKED = ["submitted", "approved"];
-  const available = state.allTasks.filter(
-    (t) => !LOCKED.includes(String(t.status || "").toLowerCase()) && t.my_status !== "declined",
-  );
-  let first = (requestedTaskId && available.some((t) => t.id === requestedTaskId) && requestedTaskId) || null;
-  if (!first && available.length) {
+  // Pick task to open: the requested task, else ask the server to CLAIM the
+  // least-loaded available task (it resumes this user's own draft first).
+  let first = requestedTaskId || null;
+  if (!first) {
     try {
       const res = await App.api("/workspace/queues/" + encodeURIComponent(queueId) + "/next");
       first = (res && res.task_id) || null;
-    } catch (e) {
-      const resumable = available.find((t) => t.my_status === "draft" || t.my_status === "returned");
-      first = (resumable && resumable.id) || (available.length ? available[Math.floor(Math.random() * available.length)].id : null);
+    } catch (err) {
+      App.toast.error(err.message || "Unable to fetch a task.");
+      els.form.innerHTML = "";
+      els.centreBody.innerHTML = App.emptyState(
+        esc(err.message || "Unable to fetch a task.") + '<br><a href="annotation-queues.html" data-hover="link" style="color:#1d4ed8;text-decoration:none;font-size:13px">Back to Annotation Queues</a>',
+      );
+      return;
     }
   }
 

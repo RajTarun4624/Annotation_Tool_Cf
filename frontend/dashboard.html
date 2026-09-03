@@ -12,7 +12,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903v"></script>
+<script src="js/icons.js?v=20260903y"></script>
+<script src="js/app.js?v=20260903y"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -229,7 +230,11 @@
 
   renderAll(); // skeleton on first paint
   await loadAll();
-  const timer = setInterval(loadAll, REFRESH_MS);
+  // Background tabs do not poll; the next refresh happens when the tab is shown again.
+  const timer = setInterval(() => { if (!document.hidden) loadAll(); }, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && Date.now() - (state.lastUpdated || 0) > REFRESH_MS) loadAll();
+  });
   window.addEventListener("beforeunload", () => clearInterval(timer));
 })();
 </script>

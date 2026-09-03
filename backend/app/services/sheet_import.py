@@ -20,7 +20,7 @@ from fastapi import HTTPException, status
 from openpyxl import load_workbook
 
 MAX_SHEET_BYTES = 20 * 1024 * 1024  # 20 MB
-MAX_PROMPT_ROWS = 5000
+MAX_PROMPT_ROWS = 10000
 
 INPUT_HEADERS = ("input", "prompt", "text", "prompt_text", "input_text", "content", "message")
 DATASET_HEADERS = ("dataset", "data_set", "task_id", "taskid", "id", "name")
@@ -195,7 +195,7 @@ def parse_sheet(file_bytes: bytes, filename: str, name_prefix: str | None = None
             continue
 
         if len(rows) >= MAX_PROMPT_ROWS:
-            raise _bad_request("Sheet has more than 5000 prompt rows.")
+            raise _bad_request(f"Sheet has more than {MAX_PROMPT_ROWS} prompt rows.")
 
         meta: dict[str, Any] = {}
         for key, idx in meta_columns:

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from app.models.user_session import UserSession
 
@@ -71,10 +71,14 @@ class UserSessionRepository:
         )
 
     @staticmethod
-    def cleanup_expired_sessions(db: Session) -> int:
-        now = datetime.now(UTC).replace(tzinfo=None)
+    def cleanup_expired_sessions(db: Session, grace_days: int = 1) -> int:
+        """Delete sessions that expired, or were revoked, more than
+        ``grace_days`` ago. Recently revoked rows are kept: the refresh
+        grace window follows their replaced_by chain."""
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=max(0, grace_days))
         deleted = db.query(UserSession).filter(
-            (UserSession.expires_at <= now) | (UserSession.is_revoked == True)
+            (UserSession.expires_at <= cutoff)
+            | ((UserSession.is_revoked == True) & (UserSession.last_used_at <= cutoff))  # noqa: E712
         ).delete(synchronize_session=False)
-        db.flush()
+        db.commit()
         return deleted

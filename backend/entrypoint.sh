@@ -23,6 +23,8 @@ echo "Database is reachable."
 echo "Running database migrations..."
 alembic upgrade head || echo "alembic upgrade head failed; continuing (schema ensured at app startup)."
 
-# Start the API server. PORT is overridable; defaults to 8005 for compose.
-echo "Starting FastAPI server on port ${PORT:-8005}..."
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8005}"
+# Start the API server: gunicorn with several uvicorn worker processes
+# (gunicorn.conf.py reads PORT and WEB_CONCURRENCY). PORT defaults to 8005.
+export PORT="${PORT:-8005}"
+echo "Starting API server on port ${PORT} with ${WEB_CONCURRENCY:-auto} workers..."
+exec gunicorn -c gunicorn.conf.py app.main:app

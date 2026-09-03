@@ -105,7 +105,7 @@ def test_majority_strings() -> None:
     value, level = majority(["a", "b", "a"], "str")
     assert (value, level) == ("a", "majority")
     value, level = majority(["x", "y", "z"], "str")
-    assert level == "none"
+    assert level == "split"
     assert value == "x", "no majority → first annotator's value"
 
 
@@ -117,7 +117,7 @@ def test_majority_lists_compare_as_sorted_sets() -> None:
     assert level == "majority"
     assert sorted(value) == ["x", "y"]
     value, level = majority([["a"], ["b"], ["c"]], "list")
-    assert level == "none"
+    assert level == "split"
     assert list(value) == ["a"]
 
 
@@ -131,7 +131,7 @@ def test_majority_ints_with_median_fallback() -> None:
     assert majority([5, 5, 5], "int") == (5, "full")
     assert majority([5, 4, 4], "int") == (4, "majority")
     value, level = majority([1, 4, 5], "int")
-    assert level == "none"
+    assert level == "split"
     assert value == 4, "no majority for ints → median"
 
 
@@ -260,8 +260,9 @@ def test_compute_consensus_majority_and_conflict() -> None:
     assert result["agreement"]["severity_J"] == "majority"
     assert result["agreement"]["attack_type"] == "full"
     assert result["majority"]["intention"] == "adversarial"
-    assert result["majority"]["severity"]["J"] == 5
-    assert result["consensus_reached"] is True
+    assert result["majority"]["severity"]["J"] == 5  # 2-of-3 majority wins the vote
+    # Consensus requires FULL agreement on every voted key; a 2-of-3 majority is not consensus.
+    assert result["consensus_reached"] is False
 
     a = dict(SAMPLE_DATA)
     a["intention"] = "adversarial"
@@ -270,7 +271,7 @@ def test_compute_consensus_majority_and_conflict() -> None:
     c = dict(SAMPLE_DATA)
     c["intention"] = "hard_to_say"
     conflict = compute_consensus(task, _annotations([a, b, c]))
-    assert conflict["agreement"]["intention"] == "none"
+    assert conflict["agreement"]["intention"] == "split"
     assert conflict["consensus_reached"] is False
     assert conflict["majority"]["intention"] == "adversarial", "conflict → first annotator's value"
 
@@ -301,7 +302,7 @@ def test_build_record_matches_customer_sample() -> None:
             "attack_type": "jailbreak, prompt_injection",
             "attack_subcategory": "role_playing_jailbreaks, direct_instruction_override",
             "domain": "other",
-            "role": "general",
+            "role": ["general"],  # multi-role: exported as a list
             "verified": True,
             "language": "en",
             "source_description": SAMPLE_DATA["source_description"],
@@ -351,7 +352,7 @@ def test_build_record_orders_annotators_by_submission_time() -> None:
     assert record["annotator_2"]["intention"] == "adversarial"
     assert record["annotator_3"]["intention"] == "adversarial"
     assert record["inter_annotator_agreement"]["intention"] == "majority"
-    assert record["inter_annotator_agreement"]["consensus_reached"] is True
+    assert record["inter_annotator_agreement"]["consensus_reached"] is False
 
 
 def test_length_bucket_boundaries() -> None:
@@ -364,5 +365,6 @@ def test_length_bucket_boundaries() -> None:
     assert length_bucket(1000) == "1,000 - 5,000 char"
     assert length_bucket(1133) == "1,000 - 5,000 char"
     assert length_bucket(4999) == "1,000 - 5,000 char"
-    assert length_bucket(5000) == "5,000 - 10,000 char"
-    assert length_bucket(10000) == "10,000+ char"
+    assert length_bucket(5000) == "5,000 - 10K char"
+    assert length_bucket(10000) == "10K - 20K char"
+    assert length_bucket(2_000_000) == "1M+ char"

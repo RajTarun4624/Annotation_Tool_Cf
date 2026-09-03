@@ -17,8 +17,9 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903v"></script>
-<script src="js/annotation-form.js?v=20260903v"></script>
+<script src="js/icons.js?v=20260903y"></script>
+<script src="js/app.js?v=20260903y"></script>
+<script src="js/annotation-form.js?v=20260903y"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -62,13 +63,11 @@
   const CODE_BOX =
     "margin:0;font-family:" + MONO + ";font-size:12px;line-height:1.55;color:#0f172a;background:#f8fafc;border:1px solid #e2e8f0;" +
     "border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;";
-  const TH = "background:#eff6ff;color:#1e3a8a;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:10px 8px;text-align:left;border-bottom:1px solid #bfdbfe;white-space:nowrap;vertical-align:bottom;";
-  const TD = "padding:8px;border-bottom:1px solid #f1f5f9;vertical-align:top;font-size:13px;line-height:1.45;";
   const PREFILL_CHIP =
     "display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 4px;border-radius:999px;border:1px solid #cbd5e1;" +
     "background:#fff;color:#334155;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;max-width:220px;transition:.15s;";
 
-  // Comparison table rows → {key, label, agreement key}.
+  // Answer fields compared when matching the form against an annotator's response.
   const ROWS = [
     { key: "data_type", label: "Data type", agr: "data_type" },
     { key: "data_structure", label: "Data structure", agr: "data_structure" },
@@ -86,11 +85,6 @@
     { key: "source", label: "Source", agr: "source" },
     { key: "source_description", label: "Source description", agr: null },
   ];
-  const OUTPUT_KEYS = [
-    { key: "jailbreak", label: "Jailbreak" },
-    { key: "prompt_injection", label: "Prompt injection" },
-    { key: "prompt_leakage", label: "Prompt leakage" },
-  ];
 
   const userEmail = profile.email || profile.username || profile.full_name || "Reviewer";
 
@@ -105,7 +99,7 @@
     detail: null,         // GET /workspace/qa/tasks/{id} payload
     form: null,           // AnnotationForm handle
     notesEl: null,
-    prefill: "majority",  // "majority" | annotation user_id | "draft"
+    prefill: null,        // annotation response id (Annotator 1 by default) | "custom"
     lastSavedJson: "",    // form JSON last known by the server (draft)
     lastSavedNotes: "",
     dirty: false,
@@ -133,7 +127,7 @@
       '<div style="display:flex;align-items:center;gap:12px;font-size:13px;color:#000000;white-space:nowrap;flex-shrink:0">' +
         '<span>Hello, <strong data-role="user-name" style="color:#000000;font-weight:700">' + esc(userEmail) + "</strong></span>" +
         '<span style="color:#cbd5e1;font-weight:300">|</span>' +
-        '<span>Task ID: <strong data-role="task-id" style="font-family:' + MONO + ';color:#000000;font-weight:700">—</strong></span>' +
+        '<span style="display:inline-flex;align-items:center;gap:8px">Task ID: <strong data-role="task-id" style="font-family:' + MONO + ';color:#000000;font-weight:700">—</strong><span data-slot="info" style="display:inline-flex"></span></span>' +
         '<span style="color:#cbd5e1;font-weight:300">|</span>' +
         '<span style="white-space:nowrap">Task time: <strong data-role="timer-display" style="font-family:' + MONO + ';color:#1d4ed8;font-weight:700;letter-spacing:0.02em">00:00</strong> <span data-role="timer-total" style="color:#334155;font-weight:600">of 120 Min 00 Sec</span></span>' +
       "</div>" +
@@ -211,6 +205,22 @@
   else if (typeof narrowQuery.addListener === "function") narrowQuery.addListener(placeFormBlock);
   placeFormBlock();
 
+  /* ── Header "i" icon: queue name, queue type (Prod / QA), task name, task ID ── */
+  const infoBtn = App.infoButton({ label: "Queue and task details" });
+  App.qs('[data-slot="info"]', topBar).appendChild(infoBtn);
+  App.infoDropdown(infoBtn, () => {
+    const q = state.queue || {};
+    const src = state.source || {};
+    const cur = (state.detail && state.detail.task) || {};
+    const isQA = (q.annotation_type || "qa") === "qa";
+    return [
+      { label: "Queue", value: q.name || "—" },
+      { label: "Type", html: App.pill(isQA ? "QA" : "Prod", isQA ? "purple" : "blue") },
+      { label: "Task name", value: q.task_name || src.task_name || cur.dataset || "—" },
+      { label: "Task ID", value: els.taskId.textContent || "—", mono: true },
+    ];
+  });
+
   /* ── Helpers ─────────────────────────────────────────────────────────────── */
   function fmtClock(seconds) {
     const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -252,19 +262,6 @@
     const map = state.labels[field] || {};
     return map[String(value)] != null ? map[String(value)] : String(value);
   };
-  function cellText(key, data) {
-    const d = data && typeof data === "object" ? data : {};
-    if (key === "attack_type" || key === "attack_subcategory" || key === "role") {
-      const list = toList(d[key]).map((v) => labelFor(key, v));
-      return list.length ? list.join(", ") : "—";
-    }
-    if (key === "verified") return d.verified == null ? "—" : toBool(d.verified) ? "Verified" : "Unverified";
-    if (key === "document_edited") return d.document_edited == null ? "—" : toBool(d.document_edited) ? "Yes" : "No";
-    if (key.indexOf("severity_") === 0) return String(sevOf(d, key.slice(-1)));
-    if (key === "source_description") return d.source_description ? String(d.source_description) : "—";
-    const v = d[key];
-    return v == null || v === "" ? "—" : labelFor(key, v);
-  }
   function cellKey(key, data) {
     const d = data && typeof data === "object" ? data : {};
     if (key === "attack_type" || key === "attack_subcategory" || key === "role") return toList(d[key]).slice().sort().join("|");
@@ -273,21 +270,6 @@
     return d[key] == null ? "" : String(d[key]).trim();
   }
   const sameAnswers = (a, b) => ROWS.every((r) => cellKey(r.key, a) === cellKey(r.key, b));
-  function agreementPill(v) {
-    if (v === "full") return App.pill("full", "emerald");
-    if (v === "majority") return App.pill("majority", "amber");
-    if (v === "split") return App.pill("split", "rose");
-    return '<span style="color:#94a3b8">—</span>';
-  }
-  function outputChip(label, on) {
-    const t = App.TONES[on ? "emerald" : "slate"];
-    return (
-      '<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid ' + t.border +
-      ";background:" + t.bg + ";color:" + t.text + ';white-space:nowrap"><span style="width:7px;height:7px;border-radius:9999px;background:' + t.dot + ';flex-shrink:0"></span>' +
-      esc(label) + '<span style="font-family:' + MONO + ';font-weight:700">' + (on ? "true" : "false") + "</span></span>"
-    );
-  }
-  const outputOf = (a) => (a && a.output && typeof a.output === "object" ? a.output : AnnotationForm.deriveOutput(a && a.data));
   const annotations = () => (state.detail && Array.isArray(state.detail.annotations) ? state.detail.annotations.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)) : []);
   // Display name per response: the same annotator may answer more than once -> "Name (response 2)".
   function annotatorLabel(a) {
@@ -314,6 +296,7 @@
     if (state.timerId) clearInterval(state.timerId);
     state.timerId = null;
     state.timerRunning = false;
+    rememberElapsed();
     paintTimer();
   }
   function startTimer() {
@@ -324,9 +307,53 @@
       if (document.visibilityState === "hidden") return;
       state.elapsed += 1;
       els.timerDisplay.textContent = fmtClock(state.elapsed);
-      rememberElapsed();
+      if (state.elapsed % 10 === 0) rememberElapsed();
     }, 1000);
     paintTimer();
+  }
+
+  /* ── QA lease heartbeat (see workspace.html): keeps the reviewer's hold on
+     the task while the tab is visible; an abandoned tab frees it on the server. ── */
+  const HEARTBEAT_MS = 60000;
+  let heartbeatId = null;
+  async function heartbeat() {
+    if (!state.currentId || !isEditable() || document.visibilityState === "hidden") return;
+    const taskId = state.currentId;
+    try {
+      const res = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/heartbeat", { method: "POST", redirectOnAuthFail: false });
+      if (taskId !== state.currentId || !res) return;
+      if (res.editable === false && isEditable()) {
+        state.detail.editable = false;
+        if (state.form) state.form.setReadOnly(true);
+        stopTimer();
+        paintBanner();
+        paintTopBar();
+        App.toast.info("This task was reviewed by someone else and is now read-only.");
+      }
+    } catch (e) { /* transient */ }
+  }
+  function startHeartbeat() { stopHeartbeat(); heartbeatId = setInterval(heartbeat, HEARTBEAT_MS); }
+  function stopHeartbeat() { if (heartbeatId) clearInterval(heartbeatId); heartbeatId = null; }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") rememberElapsed();
+    else heartbeat();
+  });
+
+  /* ── Conflict (409): another reviewer got there first → explain and move on ── */
+  async function goToNextTask() {
+    try {
+      const res = await App.api("/workspace/qa/" + encodeURIComponent(queueId) + "/next");
+      if (res && res.task_id) await openTask(res.task_id);
+      else renderCompletedQueue(res && res.busy);
+    } catch (err) {
+      App.toast.error(err.message || "Unable to fetch the next task.");
+    }
+  }
+  function isConflict(err) { return !!(err && err.status === 409); }
+  async function handleConflict(err, taskId) {
+    App.toast.warning(err.message || "Another reviewer got there first.");
+    forgetElapsed(taskId);
+    await goToNextTask();
   }
 
   /* ── Top bar ─────────────────────────────────────────────────────────────── */
@@ -391,8 +418,6 @@
     }
     const task = d.task || {};
     const anns = annotations();
-    const majority = d.majority && typeof d.majority === "object" ? d.majority : {};
-    const agreement = d.agreement && typeof d.agreement === "object" ? d.agreement : {};
     const required = task.required_annotators || (state.source && state.source.required_annotators) || anns.length || 0;
     const chars = task.data_length_chars != null ? task.data_length_chars : String(task.input_text || "").length;
 
@@ -414,56 +439,6 @@
 
     body.appendChild(App.el('<div style="' + PROMPT_BOX + '"></div>')).textContent = task.input_text || "";
 
-    // Annotator comparison
-    const card = App.el('<div style="border:1px solid #cbd5e1;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0;background:#fff"></div>');
-    card.appendChild(App.el(
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' + App.sectionLabel("Annotator comparison") +
-        '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b">' +
-          '<span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff1f2;border:1px solid #fecdd3"></span> differs from majority' +
-        "</div></div>",
-    ));
-    if (!anns.length) {
-      card.appendChild(App.el('<div style="font-size:13px;color:#64748b">No submitted annotations yet.</div>'));
-    } else {
-      let html = '<div style="overflow-x:auto;margin:0 -4px;padding:0 4px"><table style="width:100%;border-collapse:collapse;color:#0f172a;min-width:' + (420 + anns.length * 160) + 'px">';
-      html += "<thead><tr>";
-      html += '<th style="' + TH + 'position:sticky;left:0;z-index:1">Field</th>';
-      anns.forEach((a) => {
-        html += '<th style="' + TH + '">' + esc(annotatorLabel(a)) +
-          '<div style="font-weight:500;text-transform:none;letter-spacing:0;color:#64748b;font-size:11px;white-space:nowrap">' +
-          (a.submitted_at ? esc(fmt.date(a.submitted_at)) : "") + "</div></th>";
-      });
-      html += '<th style="' + TH + 'background:#dbeafe">Majority</th><th style="' + TH + '">Agreement</th>';
-      html += "</tr></thead><tbody>";
-      ROWS.forEach((r) => {
-        const majKey = cellKey(r.key, majority);
-        html += "<tr>";
-        html += '<td style="' + TD + 'font-size:12px;font-weight:600;color:#475569;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1">' + esc(r.label) + "</td>";
-        anns.forEach((a) => {
-          const differs = cellKey(r.key, a.data) !== majKey;
-          html += '<td style="' + TD + (differs ? "background:#fff1f2;color:#be123c;" : "") + '">' + esc(cellText(r.key, a.data)) + "</td>";
-        });
-        html += '<td style="' + TD + 'background:#eff6ff;font-weight:600">' + esc(cellText(r.key, majority)) + "</td>";
-        html += '<td style="' + TD + '">' + (r.agr ? agreementPill(agreement[r.agr]) : '<span style="color:#94a3b8">—</span>') + "</td>";
-        html += "</tr>";
-      });
-      html += "</tbody></table></div>";
-      card.appendChild(App.el(html));
-
-      const out = App.el('<div style="display:flex;flex-direction:column;gap:8px;padding-top:4px;border-top:1px dashed #e2e8f0"></div>');
-      out.appendChild(App.el('<div style="margin-top:8px">' + App.sectionLabel("Output (derived)") + "</div>"));
-      const outRow = (name, o, strong) =>
-        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-          '<span style="display:inline-flex;align-items:center;gap:8px;min-width:150px;font-size:13px;' + (strong ? "font-weight:600;" : "") + 'color:#0f172a">' +
-            App.avatarInitial(name, 22) + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">' + esc(name) + "</span></span>" +
-          OUTPUT_KEYS.map((k) => outputChip(k.label, !!(o && o[k.key]))).join("") + "</div>";
-      let ohtml = "";
-      anns.forEach((a) => { ohtml += outRow(annotatorLabel(a), outputOf(a), false); });
-      ohtml += outRow("Majority", AnnotationForm.deriveOutput(majority), true);
-      out.appendChild(App.el('<div style="display:flex;flex-direction:column;gap:8px">' + ohtml + "</div>"));
-      card.appendChild(out);
-    }
-    body.appendChild(card);
     centrePanel.scrollTop = 0;
   }
 
@@ -493,7 +468,9 @@
     } else if (d.qa_draft) {
       html = bannerHtml("blue", "Draft resumed", "Your saved QA answers were restored" + (d.qa_draft.updated_at ? " (" + fmt.dateTime(d.qa_draft.updated_at) + ")" : "") + ".");
     } else {
-      html = bannerHtml("blue", "Awaiting your review", "The answers are pre-filled from the majority. Pick an annotator above to load their answers, adjust anything, then Submit final.");
+      const first = defaultPrefill();
+      html = bannerHtml("blue", "Awaiting your review",
+        (first ? "The answers are pre-filled from " + first.name + ". " : "") + "Pick an annotator above to load their answers, adjust anything, then Submit final.");
     }
     els.banner.innerHTML = html;
   }
@@ -506,14 +483,13 @@
       '<ul style="margin:6px 0 0;padding-left:18px;font-weight:500">' + list.map((m) => "<li>" + esc(m) + "</li>").join("") + "</ul></div>";
   }
 
-  // Prefill chips: Majority + one per annotator who submitted in production. Clicking loads
-  // that person's answers into the form (still editable). The active chip follows the form.
+  // Prefill chips: one per annotator response submitted in production (no majority chip).
+  // Annotator 1 is loaded by default; clicking a chip loads that person's answers into the
+  // form (still editable). The active chip follows the form.
   function prefillCandidates() {
-    const d = state.detail || {};
-    const list = [{ key: "majority", name: "Majority", data: d.majority && typeof d.majority === "object" ? d.majority : {} }];
-    annotations().forEach((a) => list.push({ key: a.id || a.user_id || "slot-" + a.slot, name: annotatorLabel(a), data: a.data || {} }));
-    return list;
+    return annotations().map((a) => ({ key: a.id || a.user_id || "slot-" + a.slot, name: annotatorLabel(a), data: a.data || {} }));
   }
+  const defaultPrefill = () => prefillCandidates()[0] || null;
   function detectPrefill() {
     if (!state.form) return;
     const value = state.form.getValue();
@@ -564,11 +540,12 @@
     const task = d.task || {};
     const editable = !!d.editable;
     const draft = d.qa_draft && typeof d.qa_draft === "object" ? d.qa_draft : null;
-    // Pre-populated: the reviewer's saved draft, else the stored final, else the majority answer.
+    // Pre-populated: the reviewer's saved draft, else the stored final, else Annotator 1's answers.
+    const first = defaultPrefill();
     const initial =
       (draft && draft.data && typeof draft.data === "object" && Object.keys(draft.data).length ? draft.data : null) ||
       (d.final && typeof d.final === "object" && Object.keys(d.final).length ? d.final : null) ||
-      (d.majority && typeof d.majority === "object" ? d.majority : null) ||
+      (first && first.data && Object.keys(first.data).length ? first.data : null) ||
       AnnotationForm.emptyValue(state.taxonomy);
 
     state.form = AnnotationForm.mount(els.form, {
@@ -661,7 +638,7 @@
   }
 
   /* ── Draft saving (Save / autosave / Stop and resume) ────────────────────── */
-  const autosave = App.debounce(() => { saveDraft({ silent: true }); }, 1500);
+  const autosave = App.debounce(() => { saveDraft({ silent: true }); }, 3000);
 
   function onFormChange() {
     if (!isEditable()) return;
@@ -691,12 +668,16 @@
     if (!o.silent) App.setLoading(els.save, true);
     state.savePromise = (async () => {
       try {
-        const payload = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/draft", {
+        const ack = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/draft", {
           method: "PUT",
           body: { data, qa_notes: notes, elapsed_seconds: Math.floor(state.elapsed) },
         });
         if (seq !== state.loadSeq || taskId !== state.currentId) return true;
-        state.detail = Object.assign({}, state.detail, payload || {});
+        // Slim acknowledgement: only the draft + editable flag change on a save.
+        if (ack && typeof ack === "object") {
+          state.detail = Object.assign({}, state.detail, { qa_draft: ack.qa_draft || state.detail.qa_draft, editable: ack.editable !== false });
+          if (state.detail.task && ack.status) state.detail.task.status = ack.status;
+        }
         state.lastSavedJson = json;
         state.lastSavedNotes = notes;
         state.dirty = currentValueJson() !== json || currentNotes() !== notes;
@@ -705,7 +686,9 @@
         if (!o.silent) App.toast.success("Draft saved.");
         return true;
       } catch (err) {
-        if (seq === state.loadSeq) App.toast.error(err.message || "Unable to save the draft.");
+        if (seq !== state.loadSeq) return false;
+        if (isConflict(err)) { handleConflict(err, taskId); return false; }
+        App.toast.error(err.message || "Unable to save the draft.");
         return false;
       } finally {
         state.saving = false;
@@ -778,11 +761,14 @@
       forgetElapsed(taskId);
       const nextId = payload && payload.next_task_id;
       if (nextId) await openTask(nextId);
-      else renderCompletedQueue();
+      else renderCompletedQueue(payload && payload.busy);
     } catch (err) {
       if (seq !== state.loadSeq) return;
       const list = err && err.payload && Array.isArray(err.payload.errors) ? err.payload.errors.map(String) : null;
-      if (list && list.length) {
+      if (isConflict(err)) {
+        setSubmitting(false);
+        await handleConflict(err, taskId);
+      } else if (list && list.length) {
         showSubmitErrors(list);
         App.toast.error(list.length === 1 ? list[0] : "Submission rejected: " + list.length + " issues.");
       } else {
@@ -846,9 +832,10 @@
           App.toast.success("Task declined and returned for rework.");
           forgetElapsed(taskId);
           if (res && res.next_task_id) await openTask(res.next_task_id);
-          else renderCompletedQueue();
+          else renderCompletedQueue(res && res.busy);
         } catch (e) {
           App.setLoading(btns.okBtn, false);
+          if (isConflict(e)) { m.close(); state.dirty = false; await handleConflict(e, taskId); return; }
           App.toast.error(e.message || "Unable to decline the task.");
         }
       },
@@ -899,8 +886,9 @@
       if (isEditable() && state.dirty) await saveDraft({ silent: true });
       const res = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/skip", { method: "POST" });
       App.toast.info("Task skipped.");
+      forgetElapsed(taskId);
       if (res && res.next_task_id) await openTask(res.next_task_id);
-      else renderCompletedQueue();
+      else renderCompletedQueue(res && res.busy);
     } catch (err) {
       App.toast.error(err.message || "Failed to skip task.");
     } finally {
@@ -929,19 +917,23 @@
   }
 
   /* ── Completion state ────────────────────────────────────────────────────── */
-  function renderCompletedQueue() {
+  function renderCompletedQueue(busy) {
     // Nothing left for this user here: leave the workspace and go back to Annotation Queues.
     stopTimer();
+    stopHeartbeat();
     state.currentId = null;
     if (state.form) { state.form.destroy(); state.form = null; }
-    App.toast.success("No tasks left to review in this queue. Returning to annotation queues...");
-    setTimeout(() => { location.href = "annotation-queues.html"; }, 700);
+    const n = Number(busy) || 0;
+    if (n > 0) App.toast.info(n + (n === 1 ? " task is" : " tasks are") + " being reviewed by other reviewers right now. Returning to annotation queues...");
+    else App.toast.success("No tasks left to review in this queue. Returning to annotation queues...");
+    setTimeout(() => { location.href = "annotation-queues.html"; }, 900);
   }
 
   /* ── Task loading ────────────────────────────────────────────────────────── */
   async function openTask(taskId) {
     autosave.cancel();
     stopTimer();
+    stopHeartbeat();
     state.currentId = taskId;
     state.loadSeq += 1;
     const seq = state.loadSeq;
@@ -964,6 +956,7 @@
       paintBanner();
       paintTopBar();
       startTimer();
+      if (isEditable()) startHeartbeat();
     } catch (err) {
       if (seq !== state.loadSeq) return;
       state.detail = null;
@@ -976,11 +969,12 @@
     }
   }
 
+  // Counts only - the QA workspace never downloads the task list.
   async function loadQueue() {
-    const data = await App.api("/workspace/qa/" + encodeURIComponent(queueId));
+    const data = await App.api("/workspace/qa/" + encodeURIComponent(queueId) + "/summary");
     state.queue = data.queue || null;
     state.source = data.source_queue || null;
-    state.allTasks = Array.isArray(data.tasks) ? data.tasks.slice().sort((a, b) => (a.sequence || 0) - (b.sequence || 0)) : [];
+    state.summary = data;
   }
 
   /* ── Wire up buttons ─────────────────────────────────────────────────────── */
@@ -1003,7 +997,10 @@
     );
     return;
   }
-  const taxonomyRequest = App.api("/annotation/taxonomy");
+  const taxonomyRequest = App.taxonomy().catch((err) => {
+    App.toast.error("Taxonomy could not be loaded: " + (err.message || "network error") + ". Please reload.");
+    return null;
+  });
   try {
     await loadQueue();
   } catch (err) {
@@ -1013,23 +1010,34 @@
     return;
   }
   state.taxonomy = await taxonomyRequest;
+  if (!state.taxonomy) {
+    els.form.innerHTML = "";
+    els.centreBody.innerHTML = App.emptyState(
+      'The annotation taxonomy could not be loaded.<br><a href="' + esc(location.href) + '" data-hover="link" style="color:#1d4ed8;text-decoration:none;font-size:13px">Retry</a>',
+    );
+    return;
+  }
   state.labels = buildLabels(state.taxonomy);
 
-  // Pick task to open: the requested task, else ask the server for a free task awaiting
-  // review (it resumes this reviewer's own draft first). Fallback: a local pick.
-  const awaiting = state.allTasks.filter((t) => t.status === "submitted");
-  let first = (requestedTaskId && state.allTasks.some((t) => t.id === requestedTaskId) && requestedTaskId) || null;
-  if (!first && awaiting.length) {
+  // Pick task to open: the requested task, else ask the server to CLAIM a free
+  // task awaiting review (it resumes this reviewer's own held task first).
+  let first = requestedTaskId || null;
+  let busy = 0;
+  if (!first) {
     try {
       const res = await App.api("/workspace/qa/" + encodeURIComponent(queueId) + "/next");
       first = (res && res.task_id) || null;
-    } catch (e) {
-      const resumable = awaiting.find((t) => t.my_draft);
-      first = (resumable && resumable.id) || awaiting[Math.floor(Math.random() * awaiting.length)].id;
+      busy = (res && res.busy) || 0;
+    } catch (err) {
+      els.form.innerHTML = "";
+      els.centreBody.innerHTML = App.emptyState(
+        esc(err.message || "Unable to fetch a task.") + '<br><a href="annotation-queues.html" data-hover="link" style="color:#1d4ed8;text-decoration:none;font-size:13px">Back to Annotation Queues</a>',
+      );
+      return;
     }
   }
   if (first) await openTask(first);
-  else renderCompletedQueue();
+  else renderCompletedQueue(busy);
 })();
 </script>
 </body>

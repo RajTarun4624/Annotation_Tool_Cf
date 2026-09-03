@@ -287,7 +287,11 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
                 response = client.get(_api(f"/workspace/tasks/{task_id}"), headers=ah)
                 assert response.status_code == 200, response.text
                 detail = response.json()
-                assert detail["my_annotation"] is None
+                # The previous submit already CLAIMED this task for the caller
+                # (an empty draft with a lease), so my_annotation may be that claim.
+                assert detail["my_annotation"] is None or (
+                    detail["my_annotation"]["status"] == "draft" and detail["my_annotation"]["data"] == {}
+                )
                 assert detail["editable"] is True
                 assert detail["task"]["input_text"] == PROMPTS[t_idx]
                 assert detail["task"]["data_length_chars"] == len(PROMPTS[t_idx])
@@ -308,11 +312,12 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
                     json={"data": {"data_type": "general_text"}, "elapsed_seconds": 12},
                 )
                 assert response.status_code == 200, response.text
-                drafted = response.json()
+                drafted = response.json()  # slim autosave acknowledgement
+                assert drafted["task_id"] == task_id
                 assert drafted["my_annotation"]["status"] == "draft"
                 assert drafted["my_annotation"]["elapsed_seconds"] == 12
                 assert drafted["editable"] is True
-                assert drafted["task"]["status"] == "active"
+                assert drafted["status"] == "active"
 
                 # Invalid submit → 400 with an errors list.
                 response = client.post(
@@ -330,32 +335,42 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
                 )
                 assert response.status_code == 200, response.text
                 submitted = response.json()
-                assert submitted["my_annotation"]["status"] == "submitted"
-                assert submitted["my_annotation"]["submitted_at"]
-                assert submitted["editable"] is False
+                # Responses model: the submitted row is history (no OPEN response
+                # remains) and counts in my_submissions.
+                assert submitted["my_annotation"] is None
+                assert submitted["my_submissions"] == 1
                 assert submitted["task"]["submitted_count"] == idx + 1
                 if idx < 2:
                     assert submitted["task"]["status"] == "active"
+                    assert submitted["editable"] is True, "the task still needs responses"
                 else:
                     assert submitted["task"]["status"] == "submitted"
+                    assert submitted["editable"] is False, "full task is locked"
+                # The server CLAIMS the next task: queue order, never-answered first;
+                # once every task has this annotator's answer, a repeat on the
+                # least-loaded task is offered (annotators 1 and 2) - unless the
+                # queue is complete (annotator 3).
                 if t_idx < 2:
                     assert submitted["next_task_id"] == task_ids[t_idx + 1]
+                elif idx < 2:
+                    assert submitted["next_task_id"] == task_ids[0]
                 else:
                     assert submitted["next_task_id"] is None
 
-                # Re-submitting a submitted annotation is refused.
-                response = client.put(
-                    _api(f"/workspace/tasks/{task_id}/draft"),
-                    headers=ah,
-                    json={"data": data, "elapsed_seconds": 1},
-                )
-                assert response.status_code == 400
+                # Re-drafting a task that is already FULL is refused (400 = locked).
+                if idx == 2:
+                    response = client.put(
+                        _api(f"/workspace/tasks/{task_id}/draft"),
+                        headers=ah,
+                        json={"data": data, "elapsed_seconds": 1},
+                    )
+                    assert response.status_code == 400
 
             response = client.get(_api(f"/workspace/queues/{queue_id}"), headers=ah)
             assert response.status_code == 200, response.text
             ws = response.json()
             assert ws["my_done"] == 3
-            assert all(t["my_status"] == "submitted" for t in ws["tasks"])
+            assert all(t["my_submissions"] == 1 for t in ws["tasks"])
 
         # ---- production queue reflects the submissions --------------------
         response = client.get(_api(f"/queues/{queue_id}"), headers=headers)
@@ -372,7 +387,11 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         mine = [q for q in response.json()["items"] if q["id"] == queue_id]
         assert len(mine) == 1
         assert mine[0]["user_done_tasks"] == 3
-        assert mine[0]["user_status"] == "completed"
+        # Every task is full: nothing left for this annotator (the queue itself
+        # only reads "completed" once QA has finalised every task).
+        assert mine[0]["exhausted"] is True
+        assert mine[0]["user_available_tasks"] == 0
+        assert mine[0]["user_status"] in ("active", "completed")
 
         # ---- QA queue lists the three awaiting tasks ----------------------
         response = client.get(_api(f"/workspace/qa/{qa_queue_id}"), headers=headers)
@@ -409,7 +428,9 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         assert detail["agreement"]["intention"] == "majority"
         assert detail["agreement"]["attack_type"] == "full"
         assert detail["agreement"]["severity_J"] == "full"
-        assert detail["consensus_reached"] is True
+        # One annotator disagrees on intention -> majority, not consensus.
+        assert detail["consensus_reached"] is False
+        assert detail["agreement_level"] == "majority"
         assert detail["majority"]["intention"] == "adversarial"
         assert detail["final"]["intention"] == "adversarial"
         assert detail["record"]["inter_annotator_agreement"]["intention"] == "majority"
@@ -451,7 +472,7 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         stored = finalized["record"]
         for key in ("annotator_1", "annotator_2", "annotator_3"):
             assert key in stored
-        assert stored["inter_annotator_agreement"]["consensus_reached"] is True
+        assert stored["inter_annotator_agreement"]["consensus_reached"] is False
         assert stored["annotator_3"]["intention"] == "hard_to_say"
 
         # Finalising twice is refused.
@@ -479,7 +500,8 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         assert {t1, t3} <= qa_ids
         by_id = {t["id"]: t for t in response.json()["tasks"]}
         assert by_id[t1]["status"] == "approved"
-        assert by_id[t1]["consensus_reached"] is True
+        assert by_id[t1]["consensus_reached"] is False
+        assert by_id[t1]["agreement_level"] == "majority"
         assert by_id[t1]["finalized_by_name"]
 
         # The returned task is editable again for the annotators.
@@ -510,7 +532,7 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         )
         assert response.status_code == 200, response.text
         assert response.json()["my_annotation"]["status"] == "draft"
-        assert response.json()["task"]["status"] == "active"
+        assert response.json()["status"] == "active"
 
         # ---- exports ----------------------------------------------------
         response = client.get(_api(f"/queues/{queue_id}/export/jsonl"), headers=headers)
@@ -533,7 +555,9 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         )
         assert response.status_code == 200, response.text
         assert len(response.json()) == 3
-        assert {r["status"] for r in response.json()} >= {"approved"}
+        # Exported records carry no status field; every task of the queue is present.
+        assert {r["dataset"] for r in response.json()} == {f"flow_{suffix}_{i:04d}" for i in (1, 2, 3)}
+        assert all("status" not in r for r in response.json())
 
         response = client.get(_api(f"/queues/{queue_id}/export/xlsx"), headers=headers)
         assert response.status_code == 200, response.text

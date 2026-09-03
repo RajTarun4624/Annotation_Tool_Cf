@@ -11,22 +11,30 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import tempfile
 import uuid
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
+from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session, selectinload
+from starlette.background import BackgroundTask
 
+from app.core.database import SessionLocal
 from app.models import TaskAnnotation
 from app.models.queue import Queue
 from app.models.task import Task
 from app.services.consensus import build_record, compute_consensus, normalise_annotation
 
 EXPORT_SCOPES = ("final", "all")
+EXPORT_PAGE_SIZE = 500
 
 META_COLUMNS = (
     "data_type",
@@ -171,29 +179,47 @@ def _record_for(task: Task, annotations: list[TaskAnnotation]) -> dict[str, Any]
     return build_record(task, annotations, final)
 
 
-def collect_export_rows(db: Session, queue: Queue, scope: str = "final") -> list[dict[str, Any]]:
-    """[{"task", "record", "annotations"}] for the production ``queue``."""
+def _row_for(task: Task) -> dict[str, Any]:
+    annotations = _submitted_annotations(task)
+    if task.status == "approved" and task.final_record:
+        record = _stored_record(task, annotations)
+    elif task.status == "approved" and task.final_data:
+        record = build_record(task, annotations, task.final_data)
+    else:
+        record = _record_for(task, annotations)
+    return {"task": task, "record": record, "annotations": annotations}
+
+
+def iter_export_rows(db: Session, queue: Queue, scope: str = "final", page_size: int = EXPORT_PAGE_SIZE) -> Iterator[dict[str, Any]]:
+    """Yield {"task", "record", "annotations"} for the production ``queue`` in
+    sequence order, reading ``page_size`` tasks at a time so memory stays flat
+    however many tasks the queue holds."""
     scope = scope if scope in EXPORT_SCOPES else "final"
-    query = (
+    base = (
         db.query(Task)
         .options(selectinload(Task.annotations))
         .filter(Task.queue_id == queue.id)
     )
     if scope == "final":
-        query = query.filter(Task.status == "approved")
-    tasks = query.order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc()).all()
+        base = base.filter(Task.status == "approved")
+    base = base.order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc())
+    offset = 0
+    while True:
+        page = base.offset(offset).limit(page_size).all()
+        if not page:
+            return
+        for task in page:
+            yield _row_for(task)
+        if len(page) < page_size:
+            return
+        offset += page_size
+        db.expire_all()  # let the previous page be garbage-collected
 
-    rows: list[dict[str, Any]] = []
-    for task in tasks:
-        annotations = _submitted_annotations(task)
-        if task.status == "approved" and task.final_record:
-            record = _stored_record(task, annotations)
-        elif task.status == "approved" and task.final_data:
-            record = build_record(task, annotations, task.final_data)
-        else:
-            record = _record_for(task, annotations)
-        rows.append({"task": task, "record": record, "annotations": annotations})
-    return rows
+
+def collect_export_rows(db: Session, queue: Queue, scope: str = "final") -> list[dict[str, Any]]:
+    """[{"task", "record", "annotations"}] for the production ``queue``
+    (materialised; prefer ``iter_export_rows`` for large queues)."""
+    return list(iter_export_rows(db, queue, scope))
 
 
 def records_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -328,7 +354,8 @@ def to_xlsx(rows: list[dict[str, Any]], required_annotators: int) -> bytes:
 
 
 def export_queue(db: Session, queue: Queue, fmt: str, scope: str = "final") -> tuple[bytes, str, str]:
-    """Return (body, media_type, filename) for ``fmt`` in jsonl | json | xlsx."""
+    """Return (body, media_type, filename) for ``fmt`` in jsonl | json | xlsx
+    (materialised in memory; the API uses ``stream_export_response``)."""
     rows = collect_export_rows(db, queue, scope)
     if fmt == "jsonl":
         return to_jsonl(records_only(rows)), "application/x-ndjson", export_filename(queue, "jsonl")
@@ -342,6 +369,109 @@ def export_queue(db: Session, queue: Queue, fmt: str, scope: str = "final") -> t
             export_filename(queue, "xlsx"),
         )
     raise ValueError(f"Unsupported export format: {fmt}")
+
+
+# ─── Streaming exports (constant memory, download starts immediately) ──────
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _stream_jsonl(queue_id: uuid.UUID, scope: str) -> Iterator[bytes]:
+    db = SessionLocal()
+    try:
+        queue = db.query(Queue).filter(Queue.id == queue_id).first()
+        if queue is None:
+            return
+        for row in iter_export_rows(db, queue, scope):
+            yield (json.dumps(row["record"], ensure_ascii=False, default=_json_default) + "\n").encode("utf-8")
+    finally:
+        db.close()
+
+
+def _stream_json(queue_id: uuid.UUID, scope: str) -> Iterator[bytes]:
+    db = SessionLocal()
+    try:
+        queue = db.query(Queue).filter(Queue.id == queue_id).first()
+        yield b"[\n"
+        if queue is not None:
+            first = True
+            for row in iter_export_rows(db, queue, scope):
+                chunk = json.dumps(row["record"], ensure_ascii=False, indent=2, default=_json_default)
+                yield (("" if first else ",\n") + chunk).encode("utf-8")
+                first = False
+        yield b"\n]\n"
+    finally:
+        db.close()
+
+
+def write_xlsx_file(db: Session, queue: Queue, scope: str, path: str) -> None:
+    """Write the workbook row by row (openpyxl write-only mode) to ``path``."""
+    required = int(queue.required_annotators or 3)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Results")
+    headers = xlsx_headers(required)
+    for col, header in enumerate(headers, start=1):
+        if header in ("input", "json"):
+            width = 60
+        elif header in ("dataset", "source_description", "qa_notes"):
+            width = 28
+        else:
+            width = max(12, min(len(header) + 2, 30))
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A2"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1D4ED8")
+    header_cells = []
+    for header in headers:
+        cell = WriteOnlyCell(ws, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(vertical="center")
+        header_cells.append(cell)
+    ws.append(header_cells)
+    for row in iter_export_rows(db, queue, scope):
+        ws.append(_xlsx_row(row, required))
+    wb.save(path)
+
+
+def stream_export_response(queue: Queue, fmt: str, scope: str = "final"):
+    """FastAPI response for a queue export: JSON/JSONL are streamed straight
+    from the database in pages; XLSX is written to a temp file in write-only
+    mode and served with FileResponse (deleted afterwards)."""
+    scope = scope if scope in EXPORT_SCOPES else "final"
+    filename = export_filename(queue, fmt)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    if fmt == "jsonl":
+        return StreamingResponse(_stream_jsonl(queue.id, scope), media_type="application/x-ndjson", headers=headers)
+    if fmt == "json":
+        return StreamingResponse(_stream_json(queue.id, scope), media_type="application/json", headers=headers)
+    if fmt == "xlsx":
+        db = SessionLocal()
+        tmp = tempfile.NamedTemporaryFile(prefix="export_", suffix=".xlsx", delete=False)
+        tmp.close()
+        try:
+            fresh = db.query(Queue).filter(Queue.id == queue.id).first() or queue
+            write_xlsx_file(db, fresh, scope, tmp.name)
+        except Exception:
+            os.unlink(tmp.name)
+            raise
+        finally:
+            db.close()
+        return FileResponse(
+            tmp.name,
+            media_type=XLSX_MIME,
+            headers=headers,
+            filename=filename,
+            background=BackgroundTask(_unlink_quiet, tmp.name),
+        )
+    raise ValueError(f"Unsupported export format: {fmt}")
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def export_single_task(db: Session, task: Task, fmt: str = "json") -> tuple[bytes, str, str]:

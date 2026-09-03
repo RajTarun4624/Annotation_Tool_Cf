@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 
 from app.core.security import get_password_hash
@@ -40,18 +40,19 @@ def _serialize_user(user: User) -> dict[str, Any]:
 
 
 def get_user_by_email(db: Session, email: str) -> dict[str, Any] | None:
-    user = db.query(User).filter(User.email == email.lower()).first()
+    user = db.query(User).options(joinedload(User.role)).filter(User.email == email.lower()).first()
     if not user:
         return None
     return _serialize_user(user)
 
 
 def get_user_by_id(db: Session, user_id: str) -> dict[str, Any] | None:
+    """One statement (user JOIN role): this runs on every authenticated request."""
     try:
         user_uuid = uuid.UUID(user_id)
     except ValueError:
         return None
-    user = db.query(User).filter(User.id == user_uuid).first()
+    user = db.query(User).options(joinedload(User.role)).filter(User.id == user_uuid).first()
     if not user:
         return None
     return _serialize_user(user)

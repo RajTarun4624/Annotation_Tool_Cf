@@ -64,6 +64,49 @@ the backend).
 A machine-specific, untracked `docker-compose.override.yml` can shift the
 published ports (e.g. `8085:80`, `5435:5432`) when 80/5432 are already in use.
 
+## Capacity and scaling
+
+The tool is built to serve 200+ concurrent annotators over 10,000-task queues.
+The design follows SageMaker Ground Truth: work is handed out as short
+**leases**, every state change is re-checked under a row lock, and no request
+ever downloads a whole queue.
+
+- **Claims and leases.** `GET /workspace/queues/{id}/next` picks *and reserves*
+  a task (`SELECT ... FOR UPDATE SKIP LOCKED`). The workspace heartbeats the
+  lease every 60 s (`POST /workspace/tasks/{id}/heartbeat`); a claim idle for
+  `CLAIM_LEASE_SECONDS` (default 600) stops blocking other annotators and an
+  empty one is purged, so an abandoned browser tab never hides a task. QA tasks
+  carry the same lease (`qa_owner_id` / `qa_owner_seen_at`).
+- **Conflicts are explicit.** A write that loses a race (a task that already
+  has its N responses, a QA task held by another reviewer, a task already
+  finalised) returns **HTTP 409**; the workspace shows the message and asks for
+  the next task. Surplus answers are never stored.
+- **One open response per user per task** is enforced by a partial unique index
+  (`uq_task_annotations_open`); the same annotator may still answer again once
+  their first response is submitted, but a repeat never reserves a slot ahead of
+  a distinct annotator.
+- **Fixed statement budgets.** Claim, heartbeat, autosave, queue summary and the
+  per-user queue list issue a small fixed number of statements regardless of
+  queue size (`backend/tests/test_query_budget.py`). Measured on a 10,000-task
+  queue: claim ~35 ms, summary ~35 ms, heartbeat ~2 ms, my-queues ~20 ms.
+- **Processes, not threads.** The container runs gunicorn with uvicorn workers
+  (`backend/gunicorn.conf.py`); `WEB_CONCURRENCY` (default 4) x
+  (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) must stay below Postgres
+  `max_connections` (compose: 4 x 20 = 80 against 200). Startup schema/seed
+  work runs under a Postgres advisory lock so workers can boot together. The
+  seed never rewrites passwords or deletes roles.
+- **Exports stream.** JSON/JSONL are streamed page by page; XLSX is written in
+  openpyxl write-only mode to a temp file. Memory stays flat for any queue size.
+- **Edge caching.** nginx gzips text assets and caches versioned files
+  (`js/app.js?v=...`) for a year; HTML is always revalidated. The icon table
+  lives in `js/icons.js` so it caches independently of `app.js`.
+- **Login protection.** 10 attempts per minute per client/email before hashing;
+  dead sessions and old audit rows are trimmed opportunistically.
+
+Tunables (env): `CLAIM_LEASE_SECONDS`, `REFRESH_GRACE_SECONDS`, `USER_CACHE_SECONDS`,
+`DASHBOARD_CACHE_SECONDS`, `THREADPOOL_TOKENS`, `WEB_CONCURRENCY`, `DB_POOL_SIZE`,
+`DB_MAX_OVERFLOW`, `GUNICORN_TIMEOUT`.
+
 ## Tests
 
 ```bat
