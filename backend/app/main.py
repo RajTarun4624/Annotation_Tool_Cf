@@ -53,6 +53,18 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
+@app.middleware("http")
+async def static_no_cache(request, call_next):
+    """Frontend files are served same-origin without a build step, so make
+    browsers revalidate them on every load (ETag/Last-Modified still allow
+    cheap 304s). API responses are left untouched."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith(settings.API_V1_STR) and path != "/health":
+        response.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
+    return response
+
+
 @app.get("/health", tags=["health"])
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
