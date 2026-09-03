@@ -346,14 +346,15 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
                 else:
                     assert submitted["task"]["status"] == "submitted"
                     assert submitted["editable"] is False, "full task is locked"
-                # The server CLAIMS the next task: queue order, never-answered first;
-                # once every task has this annotator's answer, a repeat on the
-                # least-loaded task is offered (annotators 1 and 2) - unless the
-                # queue is complete (annotator 3).
+                # The server CLAIMS the next task: never-answered first (shuffled
+                # among equals); once every task has this annotator's answer, a
+                # repeat on a task still below the cap is offered (annotators 1
+                # and 2) - unless the queue is complete (annotator 3).
+                answered = set(task_ids[: t_idx + 1])
                 if t_idx < 2:
-                    assert submitted["next_task_id"] == task_ids[t_idx + 1]
+                    assert submitted["next_task_id"] in set(task_ids) - answered
                 elif idx < 2:
-                    assert submitted["next_task_id"] == task_ids[0]
+                    assert submitted["next_task_id"] in task_ids
                 else:
                     assert submitted["next_task_id"] is None
 

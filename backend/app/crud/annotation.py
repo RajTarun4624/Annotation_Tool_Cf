@@ -457,8 +457,9 @@ def _pool_window(db, queue_id: uuid.UUID, uid: uuid.UUID | None, cutoff: datetim
     """The best ``limit`` candidates, ranked in SQL: the caller's own open
     draft first, then tasks still below the cap, never-answered before
     answer-again, MOST-loaded first (finish a task's N responses before
-    starting new ones - the Ground Truth rule that keeps QA fed), queue
-    order. Declined tasks are excluded."""
+    starting new ones - the Ground Truth rule that keeps QA fed), and a
+    SHUFFLE among tasks at the same level so annotators do not all walk the
+    queue in the same order. Declined tasks are excluded."""
     sub = _pool_base(db, queue_id, uid, cutoff).subquery("pool")
     fresh = and_(~sub.c.mine_sub, ~sub.c.mine_open)
     return (
@@ -469,7 +470,7 @@ def _pool_window(db, queue_id: uuid.UUID, uid: uuid.UUID | None, cutoff: datetim
             (sub.c.load < required).desc(),
             fresh.desc(),
             sub.c.load.desc(),
-            sub.c.sequence.asc(),
+            func.random(),
         )
         .limit(limit)
         .all()
@@ -622,8 +623,8 @@ def claim_next_task(
     (submitted + live drafts by others) are below ``required_annotators``.
     The caller's own open draft is resumed first on Start Working; after a
     submit/skip/decline tasks they have never answered come first, then tasks
-    they may answer again; the task closest to its N responses wins, ties in
-    queue order.
+    they may answer again; the task closest to its N responses wins, ties are
+    shuffled.
 
     The chosen row is locked with ``FOR UPDATE SKIP LOCKED``, its load is
     re-counted under the lock, and the claim (an empty draft with a fresh
@@ -654,12 +655,14 @@ def claim_next_task(
         others = [r for r in rows if after_sequence is None or int(r.sequence or 0) != after_sequence]
         pool = others or rows
 
-        if after_sequence is None:
-            resumable = [r for r in pool if r.mine_open]
-            if resumable:
-                pick = resumable[0]
-                touch_claim(db, pick.id, uid, now)
-                return str(pick.id)
+        # A task the caller already holds open (their own claim/draft) always
+        # comes first - except the one they just left (after_sequence), which
+        # is only offered again when nothing else is available.
+        resumable = [r for r in pool if r.mine_open]
+        if resumable:
+            pick = resumable[0]
+            touch_claim(db, pick.id, uid, now)
+            return str(pick.id)
 
         pool = [r for r in pool if int(r.load or 0) < required]
         if not pool:
@@ -668,11 +671,10 @@ def claim_next_task(
         if fresh:
             pool = fresh
         # Most-loaded first so a task collects its N responses and moves to QA
-        # before new tasks are opened; ties in queue order so annotators walk the
-        # queue predictably. Contention on the same row is absorbed by SKIP
-        # LOCKED (a locked candidate is simply the next annotator's second
-        # choice), so no randomisation is needed.
-        pool.sort(key=lambda r: (-int(r.load or 0), int(r.sequence or 0)))
+        # before new tasks are opened; ties are shuffled so annotators spread
+        # across the queue instead of all walking it in the same order.
+        # Contention on the same row is absorbed by SKIP LOCKED.
+        pool.sort(key=lambda r: (-int(r.load or 0), random.random()))
 
         skipped_locked = False
         for r in pool[:CLAIM_ATTEMPTS]:
@@ -1303,7 +1305,7 @@ def claim_next_qa_task(
         return {"task_id": str(pick.id), "busy": busy_total}
 
     free = [r for r in pool if not r.busy]
-    free.sort(key=lambda r: int(r.sequence or 0))
+    random.shuffle(free)
     for r in free[:CLAIM_ATTEMPTS]:
         task = _lock_task(db, r.id, skip_locked=True)
         if task is None or task.status != "submitted":
