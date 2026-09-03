@@ -335,6 +335,8 @@
       params.set("annotation_type", state.activeTab);
       if (state.searchTerm) params.set("search", state.searchTerm);
       params.set("exclude_completed", "true");
+      // Queues with nothing left for this user (all tasks submitted / locked / reviewed) disappear.
+      params.set("hide_exhausted", "true");
       params.set("page", String(state.page));
       params.set("page_size", String(state.pageSize));
       const resp = await App.api("/queues/?" + params.toString());

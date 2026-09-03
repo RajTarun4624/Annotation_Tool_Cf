@@ -70,6 +70,7 @@ def read_queues(
     created_from: str | None = Query(default=None),
     created_to: str | None = Query(default=None),
     exclude_completed: bool = Query(default=False),
+    hide_exhausted: bool = Query(default=False),
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=500),
 ) -> Page[QueueResponse]:
@@ -89,6 +90,7 @@ def read_queues(
         exclude_completed=exclude_completed,
         page=page,
         page_size=page_size,
+        hide_exhausted=hide_exhausted,
     )
     return Page[QueueResponse](
         items=[QueueResponse.model_validate(q) for q in items],

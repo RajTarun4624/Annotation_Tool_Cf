@@ -128,6 +128,10 @@ class QueueResponse(BaseModel):
     # Per-requesting-user display status for the annotator's "My queues" list:
     # in_progress / paused / active / completed. None for admin/global callers.
     user_status: str | None = None
+    # Per-user view: tasks this user can still work on, and whether the queue
+    # has nothing left for them (hidden from Annotation Queues when true).
+    user_available_tasks: int | None = None
+    exhausted: bool = False
     assigned_user_id: str | None = None
     assigned_user_name: str | None = None
     assigned_user_ids: list[str] = Field(default_factory=list)

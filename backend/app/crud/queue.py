@@ -373,10 +373,37 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
             if isinstance(draft, dict) and str(draft.get("user_id") or "") == str(uid):
                 qa_draft_queues.add(qid)
 
+    # Production availability for THIS user: unlocked tasks (not submitted/approved)
+    # the user has not submitted or declined. Zero available -> the queue is
+    # exhausted for them and disappears from their Annotation Queues.
+    unlocked_by_queue: dict[uuid.UUID, set[uuid.UUID]] = {}
+    done_task_ids: set[uuid.UUID] = set()
+    if prod_ids:
+        for tid, qid in (
+            db.query(Task.id, Task.queue_id)
+            .filter(Task.queue_id.in_(prod_ids), Task.status.notin_(("submitted", "approved")))
+            .all()
+        ):
+            unlocked_by_queue.setdefault(qid, set()).add(tid)
+        done_task_ids = {
+            tid
+            for (tid,) in db.query(TaskAnnotation.task_id)
+            .join(Task, Task.id == TaskAnnotation.task_id)
+            .filter(
+                Task.queue_id.in_(prod_ids),
+                TaskAnnotation.user_id == uid,
+                TaskAnnotation.status.in_(("submitted", "declined")),
+            )
+        }
+
     for queue, item in zip(queues, items):
         if item["annotation_type"] == "qa":
             done = item["approved_tasks"]
             item["user_done_tasks"] = done
+            awaiting = int(item.get("submitted_tasks") or 0)
+            item["user_available_tasks"] = awaiting
+            # Exhausted once tasks have arrived and every one of them is reviewed.
+            item["exhausted"] = item["total_tasks"] > 0 and awaiting == 0
             if item["status"] == "completed":
                 item["user_status"] = "completed"
             elif queue.id in qa_draft_queues:
@@ -388,6 +415,9 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
         done = done_by_queue.get(queue.id, 0)
         total = item["total_tasks"]
         item["user_done_tasks"] = done
+        available = len(unlocked_by_queue.get(queue.id, set()) - done_task_ids)
+        item["user_available_tasks"] = available
+        item["exhausted"] = total > 0 and available == 0
         if item["status"] == "completed" or (total > 0 and done >= total):
             item["user_status"] = "completed"
         elif queue.id in touched:
@@ -411,9 +441,13 @@ def list_queues(
     exclude_completed: bool = False,
     page: int | None = None,
     page_size: int | None = None,
+    hide_exhausted: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     """Return (items, total, page, page_size). When page/page_size are None the
-    full filtered set is returned in a single page."""
+    full filtered set is returned in a single page. ``hide_exhausted`` (per-user
+    view only) drops queues that have nothing left for that user: production
+    queues where every task is locked or already submitted/declined by them,
+    QA queues where every routed task is reviewed."""
     query = db.query(Queue).options(selectinload(Queue.assigned_users))
 
     if project_id:
@@ -461,6 +495,25 @@ def list_queues(
         )
 
     query = query.order_by(Queue.created_at.desc())
+
+    if hide_exhausted and uid is not None:
+        # The exhausted flag needs the per-user view, so filter in Python and
+        # paginate the survivors.
+        all_queues = query.all()
+        names = _project_names(db, all_queues)
+        counts = _task_counts(db, [q.id for q in all_queues])
+        all_items = [_serialize_queue(q, names.get(q.project_id), counts.get(q.id)) for q in all_queues]
+        if all_queues:
+            _apply_user_view(db, all_queues, all_items, uid)
+        kept = [it for it in all_items if not it.get("exhausted")]
+        total = len(kept)
+        if page is None and page_size is None:
+            return kept, total, 1, total
+        safe_page = max(1, int(page or 1))
+        safe_size = min(500, max(1, int(page_size or 10)))
+        start = (safe_page - 1) * safe_size
+        return kept[start:start + safe_size], total, safe_page, safe_size
+
     queues, total, eff_page, eff_size = paginate_query(query, page, page_size)
 
     names = _project_names(db, queues)
