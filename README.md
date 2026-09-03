@@ -102,6 +102,18 @@ ever downloads a whole queue.
   lives in `js/icons.js` so it caches independently of `app.js`.
 - **Login protection.** 10 attempts per minute per client/email before hashing;
   dead sessions and old audit rows are trimmed opportunistically.
+- **Admission control.** Each worker admits at most `REQUEST_CONCURRENCY`
+  API requests at a time (default: DB pool capacity minus 2); the rest wait in
+  the event loop holding no connection, and a queue deeper than
+  `REQUEST_QUEUE_MAX` or older than `REQUEST_QUEUE_TIMEOUT` gets a fast 503.
+  This turns an overload into a slowdown instead of a pool-timeout collapse.
+- **Measured.** `backend/scripts/loadtest/` (seed, run, check, cleanup) drives
+  230 virtual users over 10,000 tasks against the real API. On a shared
+  8-core laptop at a realistic pace (~45 req/s) every workspace operation has
+  a p95 under 200 ms and the per-user queue list under 300 ms, with zero
+  errors and every integrity check clean; the same box saturates near 100
+  req/s. See that folder's README for the full table and how to re-run it on
+  the production host.
 
 Tunables (env): `CLAIM_LEASE_SECONDS`, `REFRESH_GRACE_SECONDS`, `USER_CACHE_SECONDS`,
 `DASHBOARD_CACHE_SECONDS`, `THREADPOOL_TOKENS`, `WEB_CONCURRENCY`, `DB_POOL_SIZE`,

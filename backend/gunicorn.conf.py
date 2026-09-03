@@ -18,7 +18,10 @@ worker_class = "uvicorn_worker.UvicornWorker"
 # Long enough for a 10,000-row import; exports stream so they never hit this.
 timeout = int(os.environ.get("GUNICORN_TIMEOUT", "120"))
 graceful_timeout = 30
-keepalive = 5
+# Longer than the pauses between an annotator's requests (autosave debounce,
+# heartbeat every 60 s) so the browser's keep-alive connection is reused
+# instead of being torn down and re-opened for every request.
+keepalive = 75
 accesslog = os.environ.get("GUNICORN_ACCESSLOG", "-")
 errorlog = "-"
 loglevel = os.environ.get("GUNICORN_LOGLEVEL", "info")

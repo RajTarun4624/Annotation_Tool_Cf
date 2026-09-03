@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -17,11 +18,76 @@ from app.services.bootstrap import seed_default_admin
 logger = logging.getLogger("uvicorn.error")
 
 
+def request_concurrency_limit() -> int:
+    if settings.REQUEST_CONCURRENCY:
+        return max(2, int(settings.REQUEST_CONCURRENCY))
+    return max(4, settings.DB_POOL_SIZE + settings.DB_MAX_OVERFLOW - 2)
+
+
+class AdmissionControl:
+    """Pure-ASGI admission control for API requests.
+
+    Why: a request holds its DB connection from the first query until the
+    session is closed, but FastAPI hops through the thread pool several times
+    per request (dependencies, endpoint, teardown). Under a burst, requests
+    waiting for a thread keep their connections, the pool empties, and every
+    checkout times out (10 s) - a collapse, not a slowdown. Capping in-flight
+    requests to the pool capacity makes excess requests wait in the event loop
+    holding nothing; the queue is bounded and times out with a fast 503.
+    """
+
+    def __init__(self, app, limit: int, max_queue: int, queue_timeout: float) -> None:
+        self.app = app
+        self.limit = limit
+        self.max_queue = max_queue
+        self.queue_timeout = queue_timeout
+        self._sem: asyncio.Semaphore | None = None
+        self.waiting = 0
+        self.rejected = 0
+
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self.limit)
+        return self._sem
+
+    async def _busy(self, send) -> None:
+        self.rejected += 1
+        body = b'{"detail":"The server is busy. Please retry in a moment."}'
+        await send({
+            "type": "http.response.start",
+            "status": 503,
+            "headers": [(b"content-type", b"application/json"), (b"retry-after", b"2"),
+                        (b"content-length", str(len(body)).encode())],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not (scope.get("path") or "").startswith(settings.API_V1_STR):
+            return await self.app(scope, receive, send)
+        sem = self._semaphore()
+        if self.waiting >= self.max_queue:
+            return await self._busy(send)
+        self.waiting += 1
+        try:
+            try:
+                await asyncio.wait_for(sem.acquire(), timeout=self.queue_timeout)
+            except asyncio.TimeoutError:
+                return await self._busy(send)
+        finally:
+            self.waiting -= 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            sem.release()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Sync endpoints run on anyio's thread pool. Size it to the DB pool so a
-    # request queues for a thread (cheap) instead of a connection (10 s timeout).
-    tokens = settings.THREADPOOL_TOKENS or (settings.DB_POOL_SIZE + settings.DB_MAX_OVERFLOW)
+    # Sync endpoints run on anyio's thread pool. Admission control (below)
+    # already bounds in-flight requests to the DB pool; give the thread pool a
+    # little more so an admitted request never blocks on a thread while it
+    # holds a connection.
+    tokens = settings.THREADPOOL_TOKENS or (request_concurrency_limit() + 8)
     anyio.to_thread.current_default_thread_limiter().total_tokens = max(8, int(tokens))
     # Order matters: the app DB must exist before create_all can run against
     # it, and tables must exist before the admin/feature seed writes rows.
@@ -58,6 +124,13 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+# Outermost: bound in-flight API requests per worker (see AdmissionControl).
+app.add_middleware(
+    AdmissionControl,
+    limit=request_concurrency_limit(),
+    max_queue=settings.REQUEST_QUEUE_MAX,
+    queue_timeout=settings.REQUEST_QUEUE_TIMEOUT,
 )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)

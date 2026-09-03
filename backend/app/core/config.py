@@ -51,8 +51,18 @@ class Settings(BaseSettings):
     USER_CACHE_SECONDS: int = 15
     # Dashboard aggregates (counts over the whole task table) cache.
     DASHBOARD_CACHE_SECONDS: int = 30
-    # Sync endpoints run on this many threads per worker. 0 = pool_size +
-    # max_overflow, so a request never blocks on a connection checkout.
+    # Admission control per worker: at most this many API requests are in
+    # flight at once (each may hold one DB connection); the rest wait in the
+    # event loop holding nothing. 0 = pool_size + max_overflow - 2 (headroom
+    # for streaming exports, which open a second connection).
+    REQUEST_CONCURRENCY: int = 0
+    # Requests queued for admission beyond this count, or waiting longer than
+    # the timeout, get a fast 503 instead of piling up.
+    REQUEST_QUEUE_MAX: int = 400
+    REQUEST_QUEUE_TIMEOUT: float = 30.0
+    # Sync endpoints run on this many threads per worker. 0 = admission limit
+    # + 8, so a request already admitted never waits for a thread while it
+    # holds a connection (that wait is what exhausts the pool under a burst).
     THREADPOOL_TOKENS: int = 0
 
     CORS_ORIGINS: str = "http://localhost:8005,http://127.0.0.1:8005,http://localhost:3000,http://127.0.0.1:3000"

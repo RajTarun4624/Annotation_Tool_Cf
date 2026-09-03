@@ -456,7 +456,9 @@ def _pool_base(db: Session, queue_id: uuid.UUID, uid: uuid.UUID | None, cutoff: 
 def _pool_window(db, queue_id: uuid.UUID, uid: uuid.UUID | None, cutoff: datetime, required: int, limit: int = 60):
     """The best ``limit`` candidates, ranked in SQL: the caller's own open
     draft first, then tasks still below the cap, never-answered before
-    answer-again, least-loaded, queue order. Declined tasks are excluded."""
+    answer-again, MOST-loaded first (finish a task's N responses before
+    starting new ones - the Ground Truth rule that keeps QA fed), queue
+    order. Declined tasks are excluded."""
     sub = _pool_base(db, queue_id, uid, cutoff).subquery("pool")
     fresh = and_(~sub.c.mine_sub, ~sub.c.mine_open)
     return (
@@ -466,7 +468,7 @@ def _pool_window(db, queue_id: uuid.UUID, uid: uuid.UUID | None, cutoff: datetim
             sub.c.mine_open.desc(),
             (sub.c.load < required).desc(),
             fresh.desc(),
-            sub.c.load.asc(),
+            sub.c.load.desc(),
             sub.c.sequence.asc(),
         )
         .limit(limit)
@@ -620,7 +622,8 @@ def claim_next_task(
     (submitted + live drafts by others) are below ``required_annotators``.
     The caller's own open draft is resumed first on Start Working; after a
     submit/skip/decline tasks they have never answered come first, then tasks
-    they may answer again; least-loaded wins, ties at random.
+    they may answer again; the task closest to its N responses wins, ties in
+    queue order.
 
     The chosen row is locked with ``FOR UPDATE SKIP LOCKED``, its load is
     re-counted under the lock, and the claim (an empty draft with a fresh
@@ -664,11 +667,12 @@ def claim_next_task(
         fresh = [r for r in pool if not r.mine_sub and not r.mine_open]
         if fresh:
             pool = fresh
-        # Least-loaded first so tasks converge on their N responses; ties in queue
-        # order so annotators walk the queue predictably. Contention on the same
-        # row is absorbed by SKIP LOCKED (a locked candidate is simply the next
-        # annotator's second choice), so no randomisation is needed.
-        pool.sort(key=lambda r: (int(r.load or 0), int(r.sequence or 0)))
+        # Most-loaded first so a task collects its N responses and moves to QA
+        # before new tasks are opened; ties in queue order so annotators walk the
+        # queue predictably. Contention on the same row is absorbed by SKIP
+        # LOCKED (a locked candidate is simply the next annotator's second
+        # choice), so no randomisation is needed.
+        pool.sort(key=lambda r: (-int(r.load or 0), int(r.sequence or 0)))
 
         skipped_locked = False
         for r in pool[:CLAIM_ATTEMPTS]:

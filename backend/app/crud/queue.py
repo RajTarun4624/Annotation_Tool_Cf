@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.core.cache import TTLCache
 from app.models import TaskAnnotation
 from app.models.project import Project
 from app.models.queue import Queue, queue_assigned_users
@@ -56,6 +57,10 @@ _EMPTY_COUNTS: dict[str, int] = {
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
+
+# Per-process cache of get_queue_access_meta (permission gate on every workspace request).
+ACCESS_META_CACHE_SECONDS = 10
+access_meta_cache = TTLCache(max_items=4096)
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -147,18 +152,40 @@ def serialize_task(task: Task, required_annotators: int | None = None) -> dict[s
     }
 
 
+def _assignees(db: Session, queue_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[tuple[str, str]]]:
+    """(user id, name) per queue from ONE query over the join table - no User
+    ORM objects. A queue shared by 200 annotators costs 200 tuples, not 200
+    hydrated entities per listing."""
+    out: dict[uuid.UUID, list[tuple[str, str]]] = {}
+    if not queue_ids:
+        return out
+    rows = (
+        db.query(queue_assigned_users.c.queue_id, User.id, User.full_name)
+        .join(User, User.id == queue_assigned_users.c.user_id)
+        .filter(queue_assigned_users.c.queue_id.in_(queue_ids))
+        .order_by(queue_assigned_users.c.queue_id, User.full_name)
+        .all()
+    )
+    for qid, uid, name in rows:
+        out.setdefault(qid, []).append((str(uid), name))
+    return out
+
+
 def _serialize_queue(
     queue: Queue,
     project_name: str | None = None,
     counts: dict[str, int] | None = None,
+    assignees: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """QueueResponse-shaped dict. ``counts`` comes from ``_task_counts``; the
-    ``assigned_users`` relationship is expected to be loaded (selectinload in
-    list paths, lazy for single fetches)."""
+    """QueueResponse-shaped dict. ``counts`` comes from ``_task_counts``;
+    ``assignees`` from ``_assignees`` (list paths) - when omitted the
+    ``assigned_users`` relationship is read (single fetches)."""
     c = counts or _EMPTY_COUNTS
     is_qa = (queue.annotation_type or "production") == "qa"
 
-    id_to_name = {str(u.id): u.full_name for u in (queue.assigned_users or [])}
+    if assignees is None:
+        assignees = [(str(u.id), u.full_name) for u in (queue.assigned_users or [])]
+    id_to_name = {uid: name for uid, name in assignees}
     assigned_user_ids = list(id_to_name.keys())
     assigned_user_names = list(id_to_name.values())
 
@@ -459,7 +486,7 @@ def list_queues(
     view only) drops queues with nothing left in them: production queues where
     every task has its required submissions (or is finalised), QA queues where
     every routed task is reviewed."""
-    query = db.query(Queue).options(selectinload(Queue.assigned_users))
+    query = db.query(Queue)
 
     if project_id:
         pid = _parse_uuid(project_id)
@@ -513,7 +540,11 @@ def list_queues(
         all_queues = query.all()
         names = _project_names(db, all_queues)
         counts = _task_counts(db, [q.id for q in all_queues])
-        all_items = [_serialize_queue(q, names.get(q.project_id), counts.get(q.id)) for q in all_queues]
+        people = _assignees(db, [q.id for q in all_queues])
+        all_items = [
+            _serialize_queue(q, names.get(q.project_id), counts.get(q.id), people.get(q.id, []))
+            for q in all_queues
+        ]
         if all_queues:
             _apply_user_view(db, all_queues, all_items, uid)
         kept = [it for it in all_items if not it.get("exhausted")]
@@ -529,7 +560,11 @@ def list_queues(
 
     names = _project_names(db, queues)
     counts = _task_counts(db, [q.id for q in queues])
-    items = [_serialize_queue(q, names.get(q.project_id), counts.get(q.id)) for q in queues]
+    people = _assignees(db, [q.id for q in queues])
+    items = [
+        _serialize_queue(q, names.get(q.project_id), counts.get(q.id), people.get(q.id, []))
+        for q in queues
+    ]
 
     if uid is not None and queues:
         _apply_user_view(db, queues, items, uid)
@@ -550,10 +585,29 @@ def get_queue_access_meta(db: Session, queue_id: str) -> dict[str, Any] | None:
     Returns {"id", "name", "annotation_type", "status", "assigned_user_ids",
     "linked_qa_queue_id", "source_production_queue_id", "required_annotators"}
     or None when the queue doesn't exist.
+
+    Cached per process for ACCESS_META_CACHE_SECONDS: this gate runs on every
+    workspace request and a queue shared by 200 annotators returns 200 ids
+    each time. Assignment changes invalidate the entry (same process) and
+    otherwise take effect within the TTL.
     """
     queue_uuid = _parse_uuid(queue_id)
     if queue_uuid is None:
         return None
+    cached = access_meta_cache.get(str(queue_uuid))
+    if cached is not None:
+        return dict(cached, assigned_user_ids=list(cached["assigned_user_ids"]))
+    meta = _load_queue_access_meta(db, queue_uuid)
+    if meta is not None:
+        access_meta_cache.set(str(queue_uuid), meta, ACCESS_META_CACHE_SECONDS)
+    return meta
+
+
+def invalidate_queue_access_meta(queue_id: Any) -> None:
+    access_meta_cache.invalidate(str(queue_id))
+
+
+def _load_queue_access_meta(db: Session, queue_uuid: uuid.UUID) -> dict[str, Any] | None:
     row = (
         db.query(
             Queue.id,
@@ -822,6 +876,7 @@ def assign_queue(db: Session, queue_id: str, user_id: str) -> dict[str, Any] | N
         return None
 
     queue.assigned_users = [user]
+    invalidate_queue_access_meta(queue.id)
     queue.assigned_user_id = user_uuid
     queue.status = "active"
     queue.updated_at = _now()
@@ -853,6 +908,7 @@ def set_queue_assignees(db: Session, queue_id: str, user_ids: list[str]) -> dict
         ordered_users = [by_id[u] for u in ordered_uuids if u in by_id]
 
     queue.assigned_users = ordered_users
+    invalidate_queue_access_meta(queue.id)
 
     surviving_ids = {u.id for u in ordered_users}
     if queue.assigned_user_id in surviving_ids:
@@ -876,6 +932,7 @@ def unassign_queue(db: Session, queue_id: str) -> dict[str, Any] | None:
         return None
 
     queue.assigned_users = []
+    invalidate_queue_access_meta(queue.id)
     queue.assigned_user_id = None
     queue.status = "inactive"
     queue.updated_at = _now()
