@@ -17,8 +17,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903p"></script>
-<script src="js/annotation-form.js?v=20260903p"></script>
+<script src="js/app.js?v=20260903q"></script>
+<script src="js/annotation-form.js?v=20260903q"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -922,25 +922,12 @@
 
   /* ── Completion state ────────────────────────────────────────────────────── */
   function renderCompletedQueue() {
+    // Nothing left for this user here: leave the workspace and go back to Annotation Queues.
     stopTimer();
-    state.detail = null;
     state.currentId = null;
     if (state.form) { state.form.destroy(); state.form = null; }
-    paintTopBar();
-    els.centreBody.innerHTML =
-      '<div style="text-align:center;padding:48px 16px;display:flex;flex-direction:column;align-items:center;gap:16px">' +
-        '<div style="width:56px;height:56px;border-radius:50%;background:#ecfdf5;color:#059669;display:flex;align-items:center;justify-content:center">' +
-          App.icon("AiOutlineCheckCircle", { size: 32 }) +
-        "</div>" +
-        '<div style="font-size:18px;font-weight:700;color:#000000">All Tasks Reviewed!</div>' +
-        '<p style="margin:0;font-size:14px;color:#334155;max-width:440px;font-weight:500">There are no tasks awaiting review in this QA queue right now. New tasks appear here once enough annotators have submitted.</p>' +
-        '<a href="annotation-queues.html" style="' + BTN_PRIMARY + 'text-decoration:none;height:36px;padding:0 20px;margin-top:8px;font-size:13px">Return to Annotation Queues</a>' +
-      "</div>";
-    els.prefill.innerHTML = "";
-    els.form.innerHTML = "";
-    els.notes.innerHTML = "";
-    els.json.innerHTML = "";
-    els.banner.innerHTML = "";
+    App.toast.success("No tasks left to review in this queue. Returning to annotation queues...");
+    setTimeout(() => { location.href = "annotation-queues.html"; }, 700);
   }
 
   /* ── Task loading ────────────────────────────────────────────────────────── */
