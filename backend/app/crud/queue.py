@@ -374,8 +374,8 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
                 qa_draft_queues.add(qid)
 
     # Production availability for THIS user: unlocked tasks (not submitted/approved)
-    # the user has not submitted or declined. Zero available -> the queue is
-    # exhausted for them and disappears from their Annotation Queues.
+    # the user has not submitted or declined (drives the Start/Resume button).
+    # The queue only disappears (exhausted) once NO task is unlocked at all.
     unlocked_by_queue: dict[uuid.UUID, set[uuid.UUID]] = {}
     done_task_ids: set[uuid.UUID] = set()
     if prod_ids:
@@ -415,9 +415,13 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
         done = done_by_queue.get(queue.id, 0)
         total = item["total_tasks"]
         item["user_done_tasks"] = done
-        available = len(unlocked_by_queue.get(queue.id, set()) - done_task_ids)
+        unlocked = unlocked_by_queue.get(queue.id, set())
+        available = len(unlocked - done_task_ids)
         item["user_available_tasks"] = available
-        item["exhausted"] = total > 0 and available == 0
+        # Exhausted = the QUEUE has no open task left (every task has its required
+        # submissions or is finalised). A user who has personally finished every
+        # task while others are still open keeps seeing the queue as completed.
+        item["exhausted"] = total > 0 and len(unlocked) == 0
         if item["status"] == "completed" or (total > 0 and done >= total):
             item["user_status"] = "completed"
         elif queue.id in touched:
@@ -445,9 +449,9 @@ def list_queues(
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     """Return (items, total, page, page_size). When page/page_size are None the
     full filtered set is returned in a single page. ``hide_exhausted`` (per-user
-    view only) drops queues that have nothing left for that user: production
-    queues where every task is locked or already submitted/declined by them,
-    QA queues where every routed task is reviewed."""
+    view only) drops queues with nothing left in them: production queues where
+    every task has its required submissions (or is finalised), QA queues where
+    every routed task is reviewed."""
     query = db.query(Queue).options(selectinload(Queue.assigned_users))
 
     if project_id:
