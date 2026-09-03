@@ -396,6 +396,23 @@ def annotator_block(data: Any) -> dict[str, Any]:
     }
 
 
+def _required_annotators(task: Any) -> int:
+    """Annotators the task's production queue requires (ORM ``task.queue`` or a
+    dict task's ``required_annotators``). Unknown -> 2: one annotator can never
+    form a consensus on their own."""
+    value = None
+    if isinstance(task, dict):
+        value = task.get("required_annotators")
+    else:
+        queue = getattr(task, "queue", None)
+        value = getattr(queue, "required_annotators", None) if queue is not None else None
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n if n >= 1 else 2
+
+
 # ─── Majority voting ─────────────────────────────────────────────────────────
 
 def _normalise_value(value: Any, kind: str) -> Any:
@@ -464,15 +481,18 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     severity_L, intention, verified) plus the extra keys data_type,
     data_structure, domain, role, language, document_edited, source, each
     valued "full" | "majority" | "none". ``consensus_reached`` is True only
-    when at least one annotation exists and EVERY voted key (customer and
-    extra) is "full", i.e. all annotators gave identical answers.
+    when the queue's required number of annotators have submitted and EVERY
+    voted key (customer and extra) is "full", i.e. all of them gave
+    identical answers. Fewer submissions than required -> False.
 
     ``annotations`` may be ORM ``TaskAnnotation`` rows, dicts with a ``data``
     key, or bare data dicts; they are ordered by submitted_at first so the
     "first annotator wins" tie-break is deterministic. ``task`` is accepted
     for signature symmetry with :func:`build_record` and is not read.
     """
-    del task  # not needed for the vote itself
+    # Consensus needs the queue's full set of annotators: with fewer submissions
+    # (e.g. a single annotator agreeing with themselves) it is never "reached".
+    required = _required_annotators(task)
     ordered = ordered_annotations(annotations)
     datas = [normalise_annotation(_annotation_data(a)) for a in ordered]
 
@@ -524,7 +544,7 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     # Consensus only when EVERY annotator gave the same answer on EVERY voted
     # field (customer keys and the extra fields alike). A single mismatch,
     # even a 2-of-3 majority, means no consensus.
-    consensus_reached = all(
+    consensus_reached = len(datas) >= required and all(
         agreement.get(key) == "full" for key in CUSTOMER_AGREEMENT_KEYS + EXTRA_AGREEMENT_KEYS
     )
     return {"majority": majority_data, "agreement": agreement, "consensus_reached": consensus_reached}
