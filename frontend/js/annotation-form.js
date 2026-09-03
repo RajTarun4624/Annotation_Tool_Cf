@@ -378,7 +378,7 @@
 
   // Every field is mandatory except the free-text source description: mark the label with a red star.
   const REQUIRED_STAR = '<span aria-hidden="true" title="Required" style="color:#dc2626;font-weight:700;margin-left:-2px">*</span>';
-  const OPTIONAL_FIELDS = ["source_description"];
+  const OPTIONAL_FIELDS = ["source_description", "document_edited"];
   function withStar(key, labelHtml) {
     if (labelHtml == null || OPTIONAL_FIELDS.includes(key)) return labelHtml;
     const i = labelHtml.indexOf("<span");
