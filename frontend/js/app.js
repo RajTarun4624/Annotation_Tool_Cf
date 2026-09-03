@@ -1163,6 +1163,9 @@
         ? GLASS_FIELD + "background:" + bgImage + ", rgba(255,255,255,0.55);"
         : "border:1px solid #cbd5e1;background:" + bgImage + ", #fff;");
     const sel = el('<select data-hover="fieldfocus" style="' + style + '"></select>');
+    // Explicit background (chevron + fill) for callers that toggle disabled styling: reading
+    // style.background back from the element can return "" for this shorthand in Chrome.
+    sel.dataset.baseBg = c.glass ? bgImage + ", rgba(255,255,255,0.55)" : bgImage + ", #fff";
     if (c.placeholder) {
       const ph = document.createElement("option");
       ph.value = "";

@@ -468,7 +468,7 @@
         onChange: (v) => { if (readOnly) return; c.onChange(v); },
       });
       sel.setAttribute("aria-label", c.ariaLabel || FIELD_LABELS[key] || key);
-      sel.dataset.baseBg = sel.style.background;
+      if (!sel.dataset.baseBg) sel.dataset.baseBg = sel.style.background;
       sel.dataset.baseBorder = "#cbd5e1";
       refs.controls[key] = sel;
       return sel;
