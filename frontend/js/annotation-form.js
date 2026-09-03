@@ -376,8 +376,17 @@
   const BOX_STYLE = "border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;background:#ffffff;";
 
 
+  // Every field is mandatory except the free-text source description: mark the label with a red star.
+  const REQUIRED_STAR = '<span aria-hidden="true" title="Required" style="color:#dc2626;font-weight:700;margin-left:-2px">*</span>';
+  const OPTIONAL_FIELDS = ["source_description"];
+  function withStar(key, labelHtml) {
+    if (labelHtml == null || OPTIONAL_FIELDS.includes(key)) return labelHtml;
+    const i = labelHtml.indexOf("<span");
+    return i >= 0 ? labelHtml.slice(0, i) + REQUIRED_STAR + labelHtml.slice(i) : labelHtml + REQUIRED_STAR;
+  }
   function fieldWrap(key, labelHtml, control, hintHtml) {
     const wrap = h('<div data-field="' + esc(key) + '" style="min-width:0"></div>');
+    labelHtml = withStar(key, labelHtml);
     if (labelHtml != null) wrap.appendChild(h('<div data-role="label" style="' + LABEL_STYLE + '">' + labelHtml + "</div>"));
     if (control) wrap.appendChild(control);
     if (hintHtml) wrap.appendChild(h('<div style="' + HINT_STYLE + 'margin-top:4px">' + hintHtml + "</div>"));
@@ -638,7 +647,7 @@
         // Single line at the 440px workspace column width: short type word, never wraps.
         label.style.whiteSpace = "nowrap";
         label.innerHTML =
-          esc("Severity " + k) +
+          esc("Severity " + k) + REQUIRED_STAR +
           '<span style="font-weight:600;color:' + (on ? "#1d4ed8" : "#94a3b8") + ';overflow:hidden;text-overflow:ellipsis;min-width:0">' +
           esc(on ? " (" + SEVERITY_SHORT[k] + ")" : " (n/a)") + "</span>";
         label.title = SEVERITY_TITLE[k] + (on ? "" : " is not a selected attack type");
