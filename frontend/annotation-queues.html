@@ -16,7 +16,7 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903r"></script>
+<script src="js/app.js?v=20260903t"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -36,7 +36,6 @@
     active: "blue",
     in_progress: "blue",
     paused: "orange",
-    awaiting_others: "amber",
     completed: "emerald",
   };
   const PRIORITY_TONE = { low: "emerald", medium: "blue", high: "amber", critical: "rose" };
@@ -70,8 +69,7 @@
   };
   const isProduction = () => state.activeTab === "production";
   const displayStatus = () => (state.selected ? state.selected.user_status || state.selected.status : null);
-  const NO_WORK = ["completed", "awaiting_others"];
-  const canStart = () => !!state.selected && !NO_WORK.includes(displayStatus());
+  const canStart = () => !!state.selected && displayStatus() !== "completed";
   const isResume = () => displayStatus() === "paused" || displayStatus() === "in_progress";
 
   /* ── Layout ────────────────────────────────────────────────────────────── */
@@ -157,9 +155,7 @@
     // Disabled buttons do not emit mouseover in some browsers, so let hover land on the wrapper
     // that carries data-tip (same trick AntD uses: pointer-events:none on a disabled button in a Tooltip).
     startBtn.style.pointerEvents = canStart() ? "" : "none";
-    const tip = !state.selected ? "Select a queue first"
-      : displayStatus() === "awaiting_others" ? "You have annotated every task; waiting for the other annotators"
-      : !canStart() ? "Queue is already completed" : "";
+    const tip = !state.selected ? "Select a queue first" : !canStart() ? "Queue is already completed" : "";
     App.tooltip(startWrap, tip);
   }
 
@@ -168,10 +164,6 @@
     if (!q) return;
     if (displayStatus() === "completed") {
       App.toast.warning("Queue is already completed.");
-      return;
-    }
-    if (displayStatus() === "awaiting_others") {
-      App.toast.info("You have annotated every task in this queue. Waiting for the other annotators.");
       return;
     }
     state.starting = true;
@@ -231,9 +223,11 @@
     const key = String(p || "").toLowerCase();
     return App.pill(p ? key : "—", PRIORITY_TONE[key] || "slate");
   }
+  // Annotator-facing wording: an open queue is simply "available".
+  const STATUS_LABEL = { active: "available", in_progress: "in progress", paused: "paused", completed: "completed", inactive: "inactive" };
   function renderStatus(r) {
     const s = String(r.user_status || r.status || "").toLowerCase();
-    return App.pill(s.replace(/_/g, " "), STATUS_TONE[s] || "slate", { dot: true });
+    return App.pill(STATUS_LABEL[s] || s.replace(/_/g, " "), STATUS_TONE[s] || "slate", { dot: true });
   }
   function renderCreated(d) {
     const date = d ? App.fmt.date(d) : "—";

@@ -329,7 +329,6 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
 
     Production queue: done = tasks with a SUBMITTED annotation by this user;
       status = completed (queue completed)
-             | awaiting_others (nothing left for this user, queue still open)
              | in_progress (this user has an open DRAFT, i.e. they stopped
                a task to resume later)
              | active (nothing open: fresh queue, or every touched task was
@@ -425,10 +424,6 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
         item["exhausted"] = total > 0 and len(unlocked) == 0
         if item["status"] == "completed":
             item["user_status"] = "completed"
-        elif total > 0 and available == 0:
-            # This user has annotated every task they can; other annotators still
-            # owe submissions, so the queue is not completed, just done for them.
-            item["user_status"] = "awaiting_others"
         elif queue.id in touched:
             item["user_status"] = "in_progress"
         else:

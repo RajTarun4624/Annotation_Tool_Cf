@@ -374,12 +374,20 @@ def next_task_id(
             load[task_id] = load.get(task_id, 0) + 1
     candidates = [t for t in tasks if t.id not in done_ids]
     if not candidates:
-        return None
+        return None  # nothing new for this user: never re-serve a submitted task
     others = [t for t in candidates if after_sequence is None or (t.sequence or 0) != after_sequence]
     pool = others or candidates
     resumable = [t for t in pool if t.id in draft_ids]
-    if resumable:
-        return str(random.choice(resumable).id)
+    if after_sequence is None:
+        # Start Working / resume: the task the user paused comes first.
+        if resumable:
+            return str(random.choice(resumable).id)
+    else:
+        # Moving on after submit/skip/decline: prefer tasks the user has not touched,
+        # so a skipped task does not come straight back while fresh ones remain.
+        fresh = [t for t in pool if t.id not in draft_ids]
+        if fresh:
+            pool = fresh
     best = min(load[t.id] for t in pool)
     return str(random.choice([t for t in pool if load[t.id] == best]).id)
 
