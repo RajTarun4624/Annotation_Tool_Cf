@@ -28,9 +28,17 @@ class TaskRepository:
             joinedload(Task.queue)
         )
 
-        # Filtering by environment ('production' or 'qa')
+        # Filtering by environment: where the task currently lives. A task routed to
+        # the QA queue (enough submissions, or finalised) counts as 'qa'; everything
+        # still being annotated counts as 'production'.
         if environment:
-            query = query.filter(Task.environment == environment.lower())
+            env = environment.lower()
+            if env == "qa":
+                query = query.filter(Task.qa_queue_id.isnot(None))
+            elif env == "production":
+                query = query.filter(Task.qa_queue_id.is_(None))
+            else:
+                query = query.filter(Task.environment == env)
 
         # Filtering by queue name — exact match on the queue the task belongs to
         # (the console offers a dropdown of existing queue names).
