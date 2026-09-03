@@ -17,8 +17,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903n"></script>
-<script src="js/annotation-form.js?v=20260903n"></script>
+<script src="js/app.js?v=20260903o"></script>
+<script src="js/annotation-form.js?v=20260903o"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -293,6 +293,13 @@
   const currentNotes = () => (state.notesEl ? state.notesEl.value : "");
   const isEditable = () => !!(state.detail && state.detail.editable);
 
+  /* ── Elapsed-time memory: survives a refresh (localStorage per user + task); the server copy
+     only updates on autosave, so the larger of the two wins when a task is reopened. ── */
+  const elapsedKey = (id) => "pa:elapsed:" + (profile.id || "") + ":" + id;
+  function rememberElapsed() { try { if (state.currentId) localStorage.setItem(elapsedKey(state.currentId), String(Math.floor(state.elapsed))); } catch (e) { /* storage unavailable */ } }
+  function recallElapsed(id) { try { return Number(localStorage.getItem(elapsedKey(id))) || 0; } catch (e) { return 0; } }
+  function forgetElapsed(id) { try { localStorage.removeItem(elapsedKey(id)); } catch (e) { /* ignore */ } }
+
   /* ── Timer ───────────────────────────────────────────────────────────────── */
   function paintTimer() { els.timerDisplay.textContent = fmtClock(state.elapsed); }
   function stopTimer() {
@@ -309,6 +316,7 @@
       if (document.visibilityState === "hidden") return;
       state.elapsed += 1;
       els.timerDisplay.textContent = fmtClock(state.elapsed);
+      rememberElapsed();
     }, 1000);
     paintTimer();
   }
@@ -759,6 +767,7 @@
       state.dirty = false;
       showSubmitErrors(null);
       App.toast.success("Final annotation submitted.");
+      forgetElapsed(taskId);
       const nextId = payload && payload.next_task_id;
       if (nextId) await openTask(nextId);
       else renderCompletedQueue();
@@ -827,6 +836,7 @@
           m.close();
           state.dirty = false;
           App.toast.success("Task declined and returned for rework.");
+          forgetElapsed(taskId);
           if (res && res.next_task_id) await openTask(res.next_task_id);
           else renderCompletedQueue();
         } catch (e) {
@@ -857,6 +867,7 @@
       await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/release", { method: "POST" });
       state.dirty = false;
       App.toast.success("Task released. Returning to annotation queues...");
+      forgetElapsed(taskId);
       setTimeout(() => { location.href = "annotation-queues.html"; }, 350);
     } catch (err) {
       App.toast.error(err.message || "Failed to release task.");
@@ -952,7 +963,7 @@
       const payload = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId));
       if (seq !== state.loadSeq) return;
       state.detail = payload || {};
-      state.elapsed = Number(payload.qa_draft && payload.qa_draft.elapsed_seconds) || 0;
+      state.elapsed = Math.max(Number(payload.qa_draft && payload.qa_draft.elapsed_seconds) || 0, recallElapsed(taskId));
       paintCentre();
       mountForm();
       paintBanner();

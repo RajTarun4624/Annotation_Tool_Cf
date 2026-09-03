@@ -15,8 +15,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903n"></script>
-<script src="js/annotation-form.js?v=20260903n"></script>
+<script src="js/app.js?v=20260903o"></script>
+<script src="js/annotation-form.js?v=20260903o"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -197,6 +197,13 @@
     return !!(state.current && state.current.editable);
   }
 
+  /* ── Elapsed-time memory: survives a refresh (localStorage per user + task); the server copy
+     only updates on autosave, so the larger of the two wins when a task is reopened. ── */
+  const elapsedKey = (id) => "pa:elapsed:" + (profile.id || "") + ":" + id;
+  function rememberElapsed() { try { if (state.currentId) localStorage.setItem(elapsedKey(state.currentId), String(Math.floor(state.elapsed))); } catch (e) { /* storage unavailable */ } }
+  function recallElapsed(id) { try { return Number(localStorage.getItem(elapsedKey(id))) || 0; } catch (e) { return 0; } }
+  function forgetElapsed(id) { try { localStorage.removeItem(elapsedKey(id)); } catch (e) { /* ignore */ } }
+
   /* ── Timer ───────────────────────────────────────────────────────────────── */
   function paintTimer() {
     els.timerDisplay.textContent = fmtClock(state.elapsed);
@@ -215,6 +222,7 @@
       if (document.visibilityState === "hidden") return;
       state.elapsed += 1;
       els.timerDisplay.textContent = fmtClock(state.elapsed);
+      rememberElapsed();
     }, 1000);
     paintTimer();
   }
@@ -526,6 +534,7 @@
       state.dirty = false;
       showSubmitErrors(null);
       App.toast.success("Annotation submitted.");
+      forgetElapsed(taskId);
 
       const nextId = payload.next_task_id;
       if (nextId) {
@@ -588,6 +597,7 @@
         });
         modal.close();
         App.toast.success("Task declined.");
+        forgetElapsed(taskId);
         if (res && res.next_task_id) {
           await openTask(res.next_task_id);
         } else {
@@ -627,6 +637,7 @@
         method: "POST",
       });
       App.toast.success("Task released. Returning to annotation queues...");
+      forgetElapsed(taskId);
       setTimeout(() => {
         location.href = "annotation-queues.html";
       }, 350);
@@ -748,7 +759,7 @@
         } catch (e) { /* claim is best-effort */ }
       }
       applyPayload(payload);
-      state.elapsed = Number(payload.my_annotation && payload.my_annotation.elapsed_seconds) || 0;
+      state.elapsed = Math.max(Number(payload.my_annotation && payload.my_annotation.elapsed_seconds) || 0, recallElapsed(taskId));
       paintCentre();
       mountForm();
       paintBanner();
