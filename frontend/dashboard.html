@@ -30,10 +30,10 @@
 
   /* ── Metric definitions (Dashboard.jsx METRIC_DEFS) ─────────────────── */
   const METRIC_DEFS = [
-    { key: "total_active_users", label: "Active Users", icon: "AiOutlineTeam", color: "#2563eb", rgb: "37,99,235" },
-    { key: "total_projects", label: "Projects", icon: "AiOutlineProject", color: "#0d9488", rgb: "13,148,136" },
-    { key: "total_queues", label: "Queues", icon: "AiOutlineInbox", color: "#7c3aed", rgb: "124,58,237" },
-    { key: "currently_working_users", label: "Working Now", icon: "AiOutlineUser", color: "#d97706", rgb: "217,119,6" },
+    { key: "total_active_users", label: "Active Users", icon: "AiOutlineTeam" },
+    { key: "total_projects", label: "Projects", icon: "AiOutlineProject" },
+    { key: "total_queues", label: "Queues", icon: "AiOutlineInbox" },
+    { key: "currently_working_users", label: "Working Now", icon: "AiOutlineUser" },
   ];
 
   // Status → tone (Dashboard.jsx STATUS_STYLES); unknown falls back to pending.
@@ -43,10 +43,12 @@
   };
   const PRIORITY_TONE = { low: "emerald", medium: "blue", high: "amber", critical: "rose" };
 
-  const cardGlass = (rgb) =>
-    "background:linear-gradient(155deg, rgba(255,255,255,0.80) 0%, rgba(" + rgb + ",0.10) 100%);" +
-    "backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);" +
-    "border:1px solid rgba(255,255,255,0.7);box-shadow:0 14px 32px rgba(" + rgb + ",0.18), inset 0 1px 0 rgba(255,255,255,0.65);border-radius:18px;";
+  // Stat cards use the shared white card and the same light-blue icon chip as the
+  // rest of the app (no per-card colours or glows).
+  const CARD = App.tokens.GLASS;
+  const ICON_CHIP =
+    "display:flex;flex-shrink:0;align-items:center;justify-content:center;border-radius:10px;" +
+    "background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;";
 
   const SHIMMER =
     "background:linear-gradient(90deg, rgba(148,163,184,.22) 25%, rgba(148,163,184,.38) 42%, rgba(148,163,184,.22) 60%);" +
@@ -64,10 +66,9 @@
   root.innerHTML =
     '<div id="metric-grid" style="display:grid;grid-template-columns:repeat(1, minmax(0,1fr));gap:16px"></div>' +
     '<div style="' + App.tokens.GLASS + 'overflow:hidden">' +
-      '<div style="padding:16px 20px 12px;border-bottom:1px solid rgba(255,255,255,0.6);display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+      '<div style="padding:16px 20px 12px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;gap:12px">' +
         '<div style="display:flex;align-items:center;gap:10px;min-width:0">' +
-          '<div style="display:flex;height:36px;width:36px;flex-shrink:0;align-items:center;justify-content:center;border-radius:12px;color:#fff;' +
-            'background:linear-gradient(145deg,#2563eb,#1d4ed8);box-shadow:0 6px 14px rgba(37,99,235,0.35)">' +
+          '<div style="' + ICON_CHIP + 'height:36px;width:36px">' +
             App.icon("AiOutlineInbox", { size: 16 }) +
           "</div>" +
           '<div style="min-width:0">' +
@@ -91,7 +92,7 @@
       const raw = state.stats[card.key];
       const value = raw == null ? 0 : raw;
       return (
-        '<div data-hover="tile" style="' + cardGlass(card.rgb) +
+        '<div data-hover="tile" style="' + CARD +
           'box-sizing:border-box;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;transition:transform .2s ease">' +
           '<div style="min-width:0">' +
             '<span style="display:block;color:#475569;font-weight:600;font-size:11px;letter-spacing:.05em;text-transform:uppercase">' + esc(card.label) + "</span>" +
@@ -100,8 +101,7 @@
               : '<span style="display:block;margin-top:4px;font-size:30px;line-height:1;font-weight:700;color:#0f172a;font-family:' + MONO +
                 ';font-variant-numeric:tabular-nums">' + esc(value) + "</span>") +
           "</div>" +
-          '<div style="display:flex;height:48px;width:48px;flex-shrink:0;align-items:center;justify-content:center;border-radius:16px;color:#fff;' +
-            "background:linear-gradient(145deg, " + card.color + " 0%, " + card.color + "cc 100%);box-shadow:0 8px 18px rgba(" + card.rgb + ',0.40)">' +
+          '<div style="' + ICON_CHIP + 'height:44px;width:44px">' +
             App.icon(card.icon, { size: 20 }) +
           "</div>" +
         "</div>"

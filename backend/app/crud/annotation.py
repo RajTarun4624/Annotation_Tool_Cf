@@ -11,6 +11,7 @@ Serialisers return plain dicts shaped exactly like the SPEC2 payloads.
 
 from __future__ import annotations
 
+import random
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -92,6 +93,8 @@ def my_status_for(ann: TaskAnnotation | None) -> str:
         return "submitted"
     if ann.status == "returned":
         return "returned"
+    if ann.status == "declined":
+        return "declined"
     return "draft"
 
 
@@ -224,6 +227,23 @@ def agreement_level(agreement: dict[str, Any]) -> str | None:
     return "majority"
 
 
+def qa_draft_of(task: Task) -> dict[str, Any] | None:
+    """The reviewer's saved-but-not-finalised QA form (``tasks.draft_data``),
+    or None. Lets a reviewer stop and resume exactly like a production
+    annotator."""
+    d = task.draft_data if isinstance(task.draft_data, dict) else None
+    if not d or not isinstance(d.get("data"), dict):
+        return None
+    return {
+        "data": d.get("data") or {},
+        "qa_notes": str(d.get("qa_notes") or ""),
+        "elapsed_seconds": int(d.get("elapsed_seconds") or 0),
+        "user_id": str(d.get("user_id") or ""),
+        "user_name": str(d.get("user_name") or ""),
+        "updated_at": d.get("updated_at"),
+    }
+
+
 def qa_task_payload(task: Task) -> dict[str, Any]:
     """Response of GET /workspace/qa/tasks/{id} (also returned by finalize)."""
     annotations = submitted_annotations(task)
@@ -256,6 +276,7 @@ def qa_task_payload(task: Task) -> dict[str, Any]:
         "consensus_reached": consensus["consensus_reached"],
         "final": final,
         "record": record,
+        "qa_draft": qa_draft_of(task),
         "editable": task.status == "submitted",
     }
 
@@ -317,35 +338,42 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
 
 
 def next_task_id(db: Session, queue_id: uuid.UUID, user_id: str, after_sequence: int) -> str | None:
-    """Next task (by sequence, wrapping around) the user still has to submit.
+    """A random task the user can still work on (shuffled pool).
 
-    Skips tasks that are already locked (submitted/approved) since the user
-    could not edit them anyway. None when nothing is left.
+    The pool excludes locked tasks (submitted/approved: enough annotators
+    already submitted, so a further annotator must never receive them), tasks
+    this user already submitted or declined, and the task just left
+    (``after_sequence``) unless it is the only one left. A task the user has
+    paused as a draft is preferred so they resume their own work first.
+    None when nothing is left.
     """
     uid = _parse_uuid(user_id)
     tasks = (
         db.query(Task.id, Task.sequence, Task.status)
         .filter(Task.queue_id == queue_id, Task.status.notin_(LOCKED_TASK_STATUSES))
-        .order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc())
         .all()
     )
     if not tasks:
         return None
-    submitted_ids: set[uuid.UUID] = set()
+    done_ids: set[uuid.UUID] = set()
+    draft_ids: set[uuid.UUID] = set()
     if uid is not None:
-        submitted_ids = {
-            r[0]
-            for r in db.query(TaskAnnotation.task_id).filter(
-                TaskAnnotation.task_id.in_([t.id for t in tasks]),
-                TaskAnnotation.user_id == uid,
-                TaskAnnotation.status == "submitted",
-            )
-        }
-    candidates = [t for t in tasks if t.id not in submitted_ids]
+        rows = db.query(TaskAnnotation.task_id, TaskAnnotation.status).filter(
+            TaskAnnotation.task_id.in_([t.id for t in tasks]),
+            TaskAnnotation.user_id == uid,
+        )
+        for task_id, astatus in rows:
+            if astatus in ("submitted", "declined"):
+                done_ids.add(task_id)
+            elif astatus == "draft":
+                draft_ids.add(task_id)
+    candidates = [t for t in tasks if t.id not in done_ids]
     if not candidates:
         return None
-    later = [t for t in candidates if (t.sequence or 0) > after_sequence]
-    chosen = later[0] if later else candidates[0]
+    others = [t for t in candidates if (t.sequence or 0) != after_sequence]
+    pool = others or candidates
+    resumable = [t for t in pool if t.id in draft_ids]
+    chosen = random.choice(resumable or pool)
     return str(chosen.id)
 
 
@@ -431,11 +459,19 @@ def decline_task(
 
 
 def release_task(db: Session, task: Task, user: dict[str, Any]) -> None:
-    """Release/delete the caller's in-progress draft on this task."""
+    """Release/delete the caller's in-progress draft on this task.
+
+    When that was the only annotation the task goes back to ``pending``
+    (``active`` means >= 1 draft/submission) so nobody sees a phantom
+    in-progress task."""
     now = _now()
     ann = get_my_annotation(task, user["id"])
     if ann is not None and ann.status == "draft":
         db.delete(ann)
+        remaining = [a for a in (task.annotations or []) if a is not ann]
+        if not remaining and task.status == "active":
+            task.status = "pending"
+            task.started_at = None
     task.updated_at = now
     db.commit()
     db.refresh(task)
@@ -541,7 +577,7 @@ def submit_annotation(
             attack_type=clean.get("attack_type") or [],
             attack_subcategory=clean.get("attack_subcategory") or [],
             domain=clean.get("domain"),
-            role=clean.get("role"),
+            role=", ".join(clean.get("role") or []),
             verified=bool(clean.get("verified")),
             language=clean.get("language") or "en",
             document_edited=bool(clean.get("document_edited")),
@@ -571,7 +607,7 @@ def submit_annotation(
         out_row.attack_type = clean.get("attack_type") or []
         out_row.attack_subcategory = clean.get("attack_subcategory") or []
         out_row.domain = clean.get("domain")
-        out_row.role = clean.get("role")
+        out_row.role = ", ".join(clean.get("role") or [])
         out_row.verified = bool(clean.get("verified"))
         out_row.language = clean.get("language") or "en"
         out_row.document_edited = bool(clean.get("document_edited"))
@@ -620,8 +656,10 @@ def submit_annotation(
 
 # ─── QA workspace ──────────────────────────────────────────────────────────
 
-def list_qa_tasks(db: Session, qa_queue: Queue) -> dict[str, Any]:
-    """Payload of GET /workspace/qa/{qa_queue_id}."""
+def list_qa_tasks(db: Session, qa_queue: Queue, user_id: str | None = None) -> dict[str, Any]:
+    """Payload of GET /workspace/qa/{qa_queue_id}. ``my_draft`` marks the task
+    the calling reviewer stopped on (so the workspace resumes it first)."""
+    uid = str(user_id or "")
     source = (
         db.query(Queue).filter(Queue.id == qa_queue.source_production_queue_id).first()
         if qa_queue.source_production_queue_id
@@ -659,6 +697,10 @@ def list_qa_tasks(db: Session, qa_queue: Queue) -> dict[str, Any]:
             "agreement_level": level,
             "finalized_by_name": t.finalized_by_name or None,
             "finalized_at": t.finalized_at,
+            "my_draft": bool(
+                uid and t.status == "submitted" and isinstance(t.draft_data, dict)
+                and str(t.draft_data.get("user_id") or "") == uid
+            ),
         })
 
     queue_dict = get_queue_by_id(db, str(qa_queue.id)) or {}
@@ -673,21 +715,61 @@ def list_qa_tasks(db: Session, qa_queue: Queue) -> dict[str, Any]:
     }
 
 
-def next_qa_task_id(db: Session, qa_queue_id: uuid.UUID | None, after_sequence: int) -> str | None:
-    """Next task still awaiting review in the QA queue (by sequence, wrapping)."""
+def next_qa_task_id(
+    db: Session, qa_queue_id: uuid.UUID | None, after_sequence: int, user_id: str | None = None
+) -> str | None:
+    """A random task still awaiting review in the QA queue (shuffled pool),
+    excluding the task just left unless it is the only one. A task the caller
+    paused (their QA draft) is preferred so they resume their own work."""
     if qa_queue_id is None:
         return None
     rows = (
-        db.query(Task.id, Task.sequence)
+        db.query(Task.id, Task.sequence, Task.draft_data)
         .filter(Task.qa_queue_id == qa_queue_id, Task.status == "submitted")
-        .order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc())
         .all()
     )
     if not rows:
         return None
-    later = [r for r in rows if (r.sequence or 0) > after_sequence]
-    chosen = later[0] if later else rows[0]
+    others = [r for r in rows if (r.sequence or 0) != after_sequence]
+    pool = others or rows
+    uid = str(user_id or "")
+    mine = [
+        r for r in pool
+        if uid and isinstance(r.draft_data, dict) and str(r.draft_data.get("user_id") or "") == uid
+    ]
+    chosen = random.choice(mine or pool)
     return str(chosen.id)
+
+
+def save_qa_draft(
+    db: Session,
+    task: Task,
+    user: dict[str, Any],
+    data: dict[str, Any],
+    qa_notes: str,
+    elapsed_seconds: int,
+) -> None:
+    """Store the reviewer's in-progress final form (Save / Stop and resume)."""
+    now = _now()
+    task.draft_data = {
+        "data": data if isinstance(data, dict) else {},
+        "qa_notes": qa_notes or "",
+        "elapsed_seconds": max(0, int(elapsed_seconds or 0)),
+        "user_id": str(user["id"]),
+        "user_name": user.get("full_name") or "",
+        "updated_at": now.isoformat(),
+    }
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+
+
+def release_qa_task(db: Session, task: Task) -> None:
+    """Discard the reviewer's QA draft; the task stays awaiting review."""
+    task.draft_data = {}
+    task.updated_at = _now()
+    db.commit()
+    db.refresh(task)
 
 
 def preview_record(task: Task, data: dict[str, Any]) -> dict[str, Any]:
@@ -742,6 +824,7 @@ def finalize_task(
     task.finalized_by_name = user.get("full_name") or ""
     task.finalized_at = now
     task.qa_notes = qa_notes or ""
+    task.draft_data = {}
     task.submitted_by = user.get("full_name") or ""
     task.updated_at = now
     _maybe_complete_queues(db, task, now)
@@ -759,6 +842,7 @@ def return_task(db: Session, task: Task, qa_notes: str) -> None:
     task.qa_queue_id = None
     task.submitted_count = 0
     task.qa_notes = qa_notes or ""
+    task.draft_data = {}
     task.final_data = None
     task.final_record = None
     task.finalized_by = None

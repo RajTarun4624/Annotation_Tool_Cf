@@ -62,7 +62,7 @@
     { key: "attack_type", label: "Attack type", tax: "attack_type", agreement: "attack_type", list: true },
     { key: "attack_subcategory", label: "Subcategory", tax: "attack_subcategory", agreement: "attack_subcategory", list: true },
     { key: "domain", label: "Domain", tax: "domain", agreement: "domain" },
-    { key: "role", label: "Role", tax: "role", agreement: "role" },
+    { key: "role", label: "Role", tax: "role", agreement: "role", list: true },
     { key: "verified", label: "Verified", bool: ["Verified", "Unverified"], agreement: "verified" },
     { key: "language", label: "Language", tax: "language", agreement: "language" },
     { key: "document_edited", label: "Document edited", bool: ["Yes", "No"], agreement: "document_edited" },
@@ -87,7 +87,6 @@
   /* ── persistent layout containers (reference: p-2 max-w-7xl space-y-4) ─ */
   const headerBox = App.el('<div data-stack style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px"></div>');
   const statsBox = App.el('<div style="display:flex;flex-wrap:wrap;gap:8px"></div>');
-  const teamBox = App.el('<div style="display:none;flex-wrap:wrap;align-items:center;gap:8px"></div>');
   const bannersBox = App.el('<div style="display:none;flex-direction:column;gap:16px"></div>');
   const tablePanel = App.el('<div style="' + GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
   const tableBox = App.el("<div></div>");
@@ -136,13 +135,11 @@
       firstLoad.remove();
       root.appendChild(headerBox);
       root.appendChild(statsBox);
-      root.appendChild(teamBox);
       root.appendChild(bannersBox);
       root.appendChild(tablePanel);
     }
     renderHeader();
     renderStats();
-    renderTeam();
     renderBanners();
     renderTable();
   }
@@ -168,14 +165,18 @@
     );
     left.querySelector('[data-role="back"]').addEventListener("click", () => { location.href = "queues.html"; });
 
+    // Production: progress = tasks submitted to QA (annotation round complete); QA: tasks reviewed.
+    const progressed = qa ? num(summary.completed_tasks, 0) : num(summary.submitted_to_qa, 0);
+    const progressLabel = "submitted";
     const progressCard =
-      '<div style="border-radius:8px;border:1px solid #e2e8f0;background:#fff;padding:6px 12px;display:flex;align-items:center;gap:12px;min-width:260px;box-sizing:border-box">' +
-      '<div style="flex:1;min-width:0">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">' +
+      '<div style="border-radius:8px;border:1px solid #e2e8f0;background:#fff;padding:6px 12px;display:flex;align-items:center;gap:10px;box-sizing:border-box">' +
+      '<div style="min-width:0">' +
       '<span style="' + LABEL + '">Progress</span>' +
-      '<span style="font-size:12px;font-family:' + MONO + ';font-weight:700;color:#1e293b">' + pct + "%</span></div>" +
-      App.progress(pct, qa ? "#7c3aed" : "#1d4ed8", false) +
-      '<span style="display:block;font-size:10px;color:#64748b;margin-top:2px">' + num(summary.completed_tasks, 0) + " / " + num(summary.total_tasks, 0) + " finalised</span>" +
+      '<div style="display:flex;align-items:center;gap:8px;margin-top:3px">' +
+      '<span style="display:block;width:96px;height:4px;border-radius:100px;background:#e2e8f0;overflow:hidden;flex-shrink:0">' +
+      '<span style="display:block;height:100%;border-radius:100px;background:' + (qa ? "#7c3aed" : "#1d4ed8") + ';width:' + pct + '%;transition:width .3s ease"></span></span>' +
+      '<span style="font-size:12px;font-family:' + MONO + ';font-weight:700;color:#1e293b;white-space:nowrap">' + pct + "%</span></div>" +
+      '<span style="display:block;font-size:10px;color:#64748b;margin-top:2px;white-space:nowrap">' + progressed + " / " + num(summary.total_tasks, 0) + " " + progressLabel + "</span>" +
       "</div></div>";
 
     headerBox.innerHTML = "";
@@ -188,18 +189,16 @@
     const summary = state.data.summary || {};
     const qa = isQA();
     const total = num(summary.total_tasks, 0);
-    const finalised = num(summary.completed_tasks, 0);
-    const remaining = num(summary.pending_tasks, 0);
-    // SPEC2 5.1: production submitted_to_qa = submitted + approved → awaiting = submitted_to_qa − approved.
-    // QA queue: remaining (= submitted) is exactly what is awaiting review.
-    let awaiting = qa ? remaining : Math.max(0, num(summary.submitted_to_qa, 0) - finalised);
-    if (!qa && queue.submitted_tasks != null && num(summary.submitted_to_qa, 0) === 0) awaiting = num(queue.submitted_tasks, 0);
+    // Production: submitted = tasks whose annotation round is complete (sent to QA / approved),
+    // pending = still being annotated. QA: submitted = tasks the reviewer finalised,
+    // pending = awaiting review.
+    const submitted = qa ? num(summary.completed_tasks, 0) : num(summary.submitted_to_qa, 0);
+    const pending = num(summary.pending_tasks, Math.max(0, total - submitted));
     const stats = [
       { label: "Type", value: (summary.queue_type || queue.annotation_type || "—").toUpperCase(), tone: qa ? "purple" : "blue" },
       { label: "Total", value: total, tone: "slate" },
-      { label: "Awaiting QA", value: awaiting, tone: "purple" },
-      { label: "Finalised", value: finalised, tone: "emerald" },
-      { label: "Remaining", value: remaining, tone: "amber" },
+      { label: "Submitted", value: submitted, tone: "emerald" },
+      { label: "Pending", value: pending, tone: "amber" },
       { label: "Status", value: String(summary.status || queue.status || "—").replace(/_/g, " "), tone: "slate" },
     ];
     statsBox.innerHTML = stats
@@ -212,19 +211,6 @@
         );
       })
       .join("");
-  }
-
-  function renderTeam() {
-    const queue = state.data.queue || {};
-    const names = Array.isArray(queue.assigned_user_names) ? queue.assigned_user_names : [];
-    if (!names.length) { teamBox.style.display = "none"; teamBox.innerHTML = ""; return; }
-    teamBox.style.display = "flex";
-    teamBox.innerHTML =
-      '<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Assigned team</span>' +
-      '<span style="font-size:10px;font-family:' + MONO + ';font-weight:700;color:#334155">' + names.length + "</span>" +
-      '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
-      names.map((n) => '<span title="' + esc(n) + '" style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid #e2e8f0;background:#fff;color:#334155">' + esc(n) + "</span>").join("") +
-      "</div>";
   }
 
   function renderBanners() {
@@ -567,7 +553,7 @@
   const chip = (html) => '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid #e2e8f0;background:#fff;color:#334155;white-space:nowrap">' + html + "</span>";
 
   function renderComparison(annotations, majority, agreement, tax) {
-    const TH = "background:#f8fafc;color:#334155;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;text-align:left;border-bottom:1px solid #e2e8f0;white-space:nowrap;";
+    const TH = "background:#eff6ff;color:#1e3a8a;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;text-align:left;border-bottom:1px solid #bfdbfe;white-space:nowrap;";
     const TD = "padding:7px 10px;border-bottom:1px solid #f1f5f9;vertical-align:top;font-size:12.5px;color:#0f172a;";
     let html =
       '<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff"><table style="width:100%;border-collapse:collapse;min-width:' + (420 + annotations.length * 170) + 'px">' +

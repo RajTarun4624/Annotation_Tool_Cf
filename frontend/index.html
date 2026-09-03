@@ -6,16 +6,12 @@
   <title>Sign in · Prompt Attack Annotation</title>
   <link rel="icon" href="public/favi.png">
 </head>
-<body style="margin:0;min-width:320px;min-height:100vh;color:#0f172a;font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;background:radial-gradient(circle at top left, rgba(37,99,235,0.08) 0%, transparent 42%), radial-gradient(circle at bottom right, rgba(13,148,136,0.06) 0%, transparent 40%), linear-gradient(180deg, #fbfdff 0%, #eef3fb 100%);">
+<body style="margin:0;min-width:320px;min-height:100vh;color:#0f172a;font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;background:#ffffff;">
 
   <main style="position:relative;display:flex;min-height:100vh;align-items:center;justify-content:center;overflow:hidden;padding:40px 16px;">
-    <!-- Saturated colour blobs directly behind the card so the frosted blur reads -->
-    <div aria-hidden="true" style="pointer-events:none;position:absolute;left:-96px;top:25%;width:420px;height:420px;border-radius:9999px;background:radial-gradient(circle, rgba(37,99,235,0.4), transparent 65%);filter:blur(64px);"></div>
-    <div aria-hidden="true" style="pointer-events:none;position:absolute;right:-96px;bottom:25%;width:420px;height:420px;border-radius:9999px;background:radial-gradient(circle, rgba(13,148,136,0.38), transparent 65%);filter:blur(64px);"></div>
-    <div aria-hidden="true" style="pointer-events:none;position:absolute;left:50%;top:0;width:520px;height:320px;border-radius:9999px;transform:translateX(-50%);background:radial-gradient(circle, rgba(139,92,246,0.25), transparent 65%);filter:blur(64px);"></div>
 
     <div style="width:100%;max-width:440px;position:relative;">
-      <div style="box-sizing:border-box;width:100%;border-radius:32px;padding:24px;background:linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(238,243,255,0.55) 100%);backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);border:1px solid rgba(255,255,255,0.7);box-shadow:0 20px 60px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.6);">
+      <div style="box-sizing:border-box;width:100%;border-radius:32px;padding:24px;background:#ffffff;border:1px solid #e2e8f0;box-shadow:0 20px 60px rgba(15,23,42,0.08);">
         <div style="display:flex;flex-direction:column;align-items:center;text-align:center;margin-bottom:32px;">
           <img src="public/han-logo.png" alt="Han Digital" draggable="false" style="height:48px;width:auto;user-select:none;display:block;">
           <p style="margin:16px 0 0;color:#64748b;font-size:15px;">Sign in with your email and password.</p>
@@ -26,13 +22,13 @@
             <label for="email" style="font-size:14px;font-weight:500;color:#334155;">Email ID</label>
             <input id="email" name="email" type="email" placeholder="name@example.com" autocomplete="off" spellcheck="false"
                    data-hover="fieldfocus"
-                   style="display:block;box-sizing:border-box;outline:none;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid rgba(255,255,255,0.7);background:rgba(255,255,255,0.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#0f172a;font-size:15px;font-family:inherit;transition:border-color .15s, box-shadow .15s;">
+                   style="display:block;box-sizing:border-box;outline:none;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid #cbd5e1;background:#ffffff;color:#0f172a;font-size:15px;font-family:inherit;transition:border-color .15s, box-shadow .15s;">
           </div>
 
           <div style="display:flex;flex-direction:column;gap:8px;">
             <label for="password" style="font-size:14px;font-weight:500;color:#334155;">Password</label>
             <div data-hover="fieldfocus"
-                 style="display:flex;box-sizing:border-box;align-items:center;gap:6px;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid rgba(255,255,255,0.7);background:rgba(255,255,255,0.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);transition:border-color .15s, box-shadow .15s;">
+                 style="display:flex;box-sizing:border-box;align-items:center;gap:6px;width:100%;height:40px;padding:0 11px;border-radius:12px;border:1px solid #cbd5e1;background:#ffffff;transition:border-color .15s, box-shadow .15s;">
               <input id="password" name="password" type="password" placeholder="Enter your password" autocomplete="new-password"
                      style="flex:1;min-width:0;height:38px;border:0;outline:none;background:transparent;padding:0;color:#0f172a;font-size:15px;font-family:inherit;box-shadow:none;">
               <button id="toggle-password" type="button" aria-label="Show password" tabindex="-1"

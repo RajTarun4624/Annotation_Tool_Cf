@@ -23,7 +23,8 @@ from typing import Any
 from app.core import taxonomy as tx
 
 # Scalar dropdown fields that must hold one valid taxonomy value.
-SCALAR_FIELDS: tuple[str, ...] = ("data_type", "data_structure", "domain", "role", "language", "intention", "source")
+# (``role`` is a multi-select list, handled separately.)
+SCALAR_FIELDS: tuple[str, ...] = ("data_type", "data_structure", "domain", "language", "intention", "source")
 BOOL_FIELDS: tuple[str, ...] = ("verified", "document_edited")
 SEVERITY_ORDER: tuple[str, ...] = ("J", "I", "L")
 OUTPUT_TYPES: tuple[str, ...] = ("jailbreak", "prompt_injection", "prompt_leakage")
@@ -172,7 +173,7 @@ def empty_annotation() -> dict[str, Any]:
         "attack_type": [],
         "attack_subcategory": [],
         "domain": "",
-        "role": "",
+        "role": [],
         "verified": bool(tx.DEFAULTS["verified"]),
         "language": tx.DEFAULTS["language"],
         "source_description": "",
@@ -192,6 +193,7 @@ def normalise_annotation(data: Any) -> dict[str, Any]:
       (unknown values dropped);
     * ``attack_subcategory`` is de-duplicated and sorted by (attack type
       group, position in group); unknown values dropped;
+    * ``role`` is a list (multi-select), de-duplicated, taxonomy order;
     * ``severity`` J/I/L are coerced to ints (non-numeric -> 0); the severity
       of an attack type that is NOT selected is forced to 0. The flat
       ``severity_J`` / ``severity_I`` / ``severity_L`` keys are accepted too.
@@ -219,6 +221,13 @@ def normalise_annotation(data: Any) -> dict[str, Any]:
     attack_types.sort(key=tx.ATTACK_TYPE_ORDER.index)
     out["attack_type"] = attack_types
 
+    # role — multi-select list, de-duplicated, unknown values dropped, taxonomy order.
+    role_order = [str(o["value"]) for o in tx.OPTIONS["role"]]
+    roles = [_as_str(v) for v in _as_list(src.get("role"))]
+    roles = [v for v in _uniq(roles) if v in role_order]
+    roles.sort(key=role_order.index)
+    out["role"] = roles
+
     subs = [_as_str(v) for v in _as_list(src.get("attack_subcategory"))]
     subs = [v for v in _uniq(subs) if tx.subcategory_group(v) is not None]
     subs.sort(key=tx.subcategory_index)
@@ -244,10 +253,11 @@ def validate_annotation(data: Any) -> list[str]:
     human-readable error messages (empty when valid). Drafts are not
     validated. Normalises first, so the same rules apply to raw client input.
 
-    Rules: data_type, data_structure, domain, role, intention, language and
-    source are required valid values; attack_type is a non-empty list of valid
-    values and "benign" is exclusive; attack_subcategory is required (each
-    value in a selected attack type's group) unless attack_type == ["benign"];
+    Rules: data_type, data_structure, domain, intention, language and source
+    are required valid values; role is a non-empty list of valid values;
+    attack_type is a non-empty list of valid values and "benign" is
+    exclusive; attack_subcategory holds exactly ONE value per selected attack
+    type (from that type's group) and is empty when attack_type == ["benign"];
     verified / document_edited must be booleans; severities are ints 0..5 and
     the severity of a selected attack type must be 1..5 (unselected -> 0);
     source_description is a (possibly empty) string.
@@ -263,6 +273,14 @@ def validate_annotation(data: Any) -> list[str]:
             errors.append(f"{label} is required.")
         elif not tx.is_valid(field, value):
             errors.append(f"{label}: '{value}' is not a valid option.")
+
+    # role — non-empty list of valid values.
+    raw_roles = _uniq([_as_str(v) for v in _as_list(raw.get("role"))])
+    for v in raw_roles:
+        if v and not tx.is_valid("role", v):
+            errors.append(f"Role: '{v}' is not a valid option.")
+    if not clean["role"]:
+        errors.append("Role: select at least one value.")
 
     # attack_type — non-empty, valid, benign exclusive.
     raw_types = _uniq([_as_str(v) for v in _as_list(raw.get("attack_type"))])
@@ -286,17 +304,28 @@ def validate_annotation(data: Any) -> list[str]:
         if subs:
             errors.append("Attack subcategory must be empty when the attack type is 'Benign'.")
     elif attack_types:
-        if not subs:
-            errors.append("Attack subcategory: select at least one value.")
-        else:
-            selected = set(attack_types)
-            for v in subs:
-                group = tx.subcategory_group(v)
-                if group not in selected:
-                    errors.append(
-                        f"Attack subcategory: '{tx.subcategory_label(v)}' belongs to "
-                        f"'{tx.label_for('attack_type', group)}', which is not selected."
-                    )
+        selected = set(attack_types)
+        stray = False
+        for v in subs:
+            group = tx.subcategory_group(v)
+            if group not in selected:
+                stray = True
+                errors.append(
+                    f"Attack subcategory: '{tx.subcategory_label(v)}' belongs to "
+                    f"'{tx.label_for('attack_type', group)}', which is not selected."
+                )
+        if not stray:
+            # Exactly one subcategory per selected attack type that has subcategories.
+            groups = tx.taxonomy_payload().get("attack_subcategory") or {}
+            for t in attack_types:
+                if t == "benign" or not groups.get(t):
+                    continue
+                count = sum(1 for v in subs if tx.subcategory_group(v) == t)
+                label = tx.label_for("attack_type", t)
+                if count == 0:
+                    errors.append(f"Attack subcategory: select one value for '{label}'.")
+                elif count > 1:
+                    errors.append(f"Attack subcategory: select only one value for '{label}'.")
 
     # booleans — anything that is not bool-like is rejected.
     for field in BOOL_FIELDS:
@@ -434,8 +463,9 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     output_prompt_injection, output_prompt_leakage, severity_J, severity_I,
     severity_L, intention, verified) plus the extra keys data_type,
     data_structure, domain, role, language, document_edited, source, each
-    valued "full" | "majority" | "none". ``consensus_reached`` is True when at
-    least one annotation exists and none of the ten customer keys is "none".
+    valued "full" | "majority" | "none". ``consensus_reached`` is True only
+    when at least one annotation exists and EVERY voted key (customer and
+    extra) is "full", i.e. all annotators gave identical answers.
 
     ``annotations`` may be ORM ``TaskAnnotation`` rows, dicts with a ``data``
     key, or bare data dicts; they are ordered by submitted_at first so the
@@ -474,8 +504,9 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     majority_data["intention"] = vote("str", [d["intention"] for d in datas], "intention")
     majority_data["verified"] = vote("bool", [d["verified"] for d in datas], "verified")
 
-    for field in ("data_type", "data_structure", "domain", "role", "language", "source"):
+    for field in ("data_type", "data_structure", "domain", "language", "source"):
         majority_data[field] = vote("str", [d[field] for d in datas], field)
+    majority_data["role"] = vote("list", [d["role"] for d in datas], "role")
     majority_data["document_edited"] = vote("bool", [d["document_edited"] for d in datas], "document_edited")
 
     # Free text: agreed value if annotators typed the same thing, otherwise the
@@ -490,7 +521,12 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     # attack_type list is forced back to 0 and the shape stays canonical.
     majority_data = normalise_annotation(majority_data)
 
-    consensus_reached = all(agreement.get(key) != "none" for key in CUSTOMER_AGREEMENT_KEYS)
+    # Consensus only when EVERY annotator gave the same answer on EVERY voted
+    # field (customer keys and the extra fields alike). A single mismatch,
+    # even a 2-of-3 majority, means no consensus.
+    consensus_reached = all(
+        agreement.get(key) == "full" for key in CUSTOMER_AGREEMENT_KEYS + EXTRA_AGREEMENT_KEYS
+    )
     return {"majority": majority_data, "agreement": agreement, "consensus_reached": consensus_reached}
 
 

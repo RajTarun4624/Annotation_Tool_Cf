@@ -132,7 +132,7 @@ def import_template(
         cell.fill = header_fill
         cell.alignment = Alignment(vertical="center")
 
-    ws.append(["John Doe", "john.doe@example.com", "Password123", "Annotator"])
+    ws.append(["John Doe", "john.doe@example.com", "Password123", "User"])  # sample row uses a real role (Admin | QA | User)
 
     widths = [20, 30, 20, 20]
     for col, width in enumerate(widths, start=1):

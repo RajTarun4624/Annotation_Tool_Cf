@@ -28,25 +28,15 @@
 
   const FONT = '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
   const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-  const BODY_BG =
-    "radial-gradient(circle at top left, rgba(37,99,235,0.08) 0%, transparent 42%), " +
-    "radial-gradient(circle at bottom right, rgba(13,148,136,0.06) 0%, transparent 40%), " +
-    "linear-gradient(180deg, #fbfdff 0%, #eef3fb 100%)";
-  const GLASS_BASE =
-    "background:linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(238,243,255,0.55) 100%);" +
-    "backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);" +
-    "border:1px solid rgba(255,255,255,0.7);";
-  const GLASS =
-    GLASS_BASE + "box-shadow:0 18px 44px rgba(43,44,124,0.14), inset 0 1px 0 rgba(255,255,255,0.6);border-radius:18px;";
-  const GLASS_STRONG =
-    GLASS_BASE + "box-shadow:0 24px 60px rgba(43,44,124,0.18), inset 0 1px 0 rgba(255,255,255,0.6);";
-  const GLASS_FIELD =
-    "background:rgba(255,255,255,0.55);backdrop-filter:blur(12px) saturate(140%);-webkit-backdrop-filter:blur(12px) saturate(140%);" +
-    "border:1px solid rgba(255,255,255,0.7);box-shadow:0 4px 14px rgba(43,44,124,0.08);";
+  // Plain white surfaces everywhere: solid backgrounds, light grey borders and soft
+  // shadows (no gradients / backdrop blur) so text stays clearly readable.
+  const BODY_BG = "#ffffff";
+  const GLASS_BASE = "background:#ffffff;border:1px solid #e2e8f0;";
+  const GLASS = GLASS_BASE + "box-shadow:0 1px 3px rgba(15,23,42,0.06);border-radius:18px;";
+  const GLASS_STRONG = GLASS_BASE + "box-shadow:0 2px 8px rgba(15,23,42,0.08);";
+  const GLASS_FIELD = "background:#ffffff;border:1px solid #e2e8f0;box-shadow:0 1px 2px rgba(15,23,42,0.04);";
   const MODAL_CONTENT =
-    "background:linear-gradient(160deg, rgba(255,255,255,0.86) 0%, rgba(238,243,255,0.74) 100%);" +
-    "backdrop-filter:blur(26px) saturate(170%);-webkit-backdrop-filter:blur(26px) saturate(170%);" +
-    "border:1px solid rgba(255,255,255,0.75);box-shadow:0 30px 70px rgba(43,44,124,0.22), inset 0 1px 0 rgba(255,255,255,0.6);" +
+    "background:#ffffff;border:1px solid #e2e8f0;box-shadow:0 30px 70px rgba(15,23,42,0.18);" +
     "border-radius:16px;overflow:hidden;";
   const MODAL_MASK = "background:rgba(30,32,60,0.28);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);";
 
@@ -1091,6 +1081,26 @@
       "</div>"
     );
   }
+  /** progressRing(pct, color, size, showLabel) → circular progress indicator; showLabel=false hides the centre percentage. */
+  function progressRing(pct, color, size, showLabel) {
+    const v = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    const s = size || 40;
+    const stroke = Math.max(3, Math.round(s * 0.1));
+    const r = (s - stroke) / 2;
+    const c = 2 * Math.PI * r;
+    const dash = (c * v) / 100;
+    const fontSize = Math.max(9, Math.round(s * 0.26));
+    return (
+      '<span role="img" aria-label="' + v + '% complete" style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:' + s + 'px;height:' + s + 'px;flex-shrink:0">' +
+      '<svg width="' + s + '" height="' + s + '" viewBox="0 0 ' + s + ' ' + s + '" style="display:block;transform:rotate(-90deg)">' +
+      '<circle cx="' + s / 2 + '" cy="' + s / 2 + '" r="' + r + '" fill="none" stroke="#e2e8f0" stroke-width="' + stroke + '"></circle>' +
+      '<circle cx="' + s / 2 + '" cy="' + s / 2 + '" r="' + r + '" fill="none" stroke="' + (color || "#1d4ed8") + '" stroke-width="' + stroke + '" stroke-linecap="round" ' +
+      'stroke-dasharray="' + dash.toFixed(2) + ' ' + (c - dash).toFixed(2) + '" style="transition:stroke-dasharray .3s ease"></circle>' +
+      "</svg>" +
+      (showLabel === false ? "" : '<span style="position:absolute;font-size:' + fontSize + 'px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums;line-height:1">' + v + "%</span>") +
+      "</span>"
+    );
+  }
   function avatarInitial(name, size) {
     const s = size || 32;
     const letter = String(name || "?").trim().charAt(0).toUpperCase() || "?";
@@ -1265,9 +1275,10 @@
   }
 
   /* ── 8. Table / pagination / tabs ──────────────────────────────────────── */
+  // Light-blue header row so column titles stand out on the white cards.
   const TH_STYLE =
-    "background:rgba(248,250,252,0.8);color:#000;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;" +
-    "padding:10px 8px;text-align:left;border-bottom:1px solid #e2e8f0;white-space:nowrap;";
+    "background:#eff6ff;color:#1e3a8a;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;" +
+    "padding:10px 8px;text-align:left;border-bottom:1px solid #bfdbfe;white-space:nowrap;";
   const TD_STYLE = "padding:8px;border-bottom:1px solid #f1f5f9;vertical-align:middle;";
 
   function cssWidth(w) {
@@ -1605,7 +1616,7 @@
       '<div id="pa-main" style="height:100vh;display:flex;flex-direction:column;transition:margin-left .2s;background:transparent">' +
         '<header style="margin:16px 16px 0;z-index:40;position:relative">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;border-radius:16px;padding:12px 20px;gap:12px;' + GLASS_BASE +
-        'box-shadow:0 16px 44px rgba(43,44,124,0.15), inset 0 1px 0 rgba(255,255,255,0.6);transition:all .3s">' +
+        'box-shadow:0 1px 3px rgba(15,23,42,0.06);transition:all .3s">' +
         '<div style="display:flex;flex-direction:column;min-width:0"><div style="display:flex;align-items:flex-end;gap:12px;min-width:0">' +
         '<h1 style="margin:0;font-size:24px;font-weight:600;line-height:1;color:#0f172a;white-space:nowrap">' + escapeHtml(c.title || "Workspace") + "</h1>" +
         (c.subtitle ? '<span data-hide="md" style="font-size:14px;color:#64748b;padding-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(c.subtitle) + "</span>" : "") +
@@ -1710,6 +1721,7 @@
     permChip,
     slaBadge,
     progress,
+    progressRing,
     avatarInitial,
     searchBox,
     select,

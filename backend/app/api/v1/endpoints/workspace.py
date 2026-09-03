@@ -54,6 +54,12 @@ class ReturnRequest(BaseModel):
     qa_notes: str = Field(min_length=3)
 
 
+class QaDraftRequest(BaseModel):
+    data: dict[str, Any] = Field(default_factory=dict)
+    qa_notes: str = ""
+    elapsed_seconds: int = Field(default=0, ge=0)
+
+
 # ─── Access helpers ────────────────────────────────────────────────────────
 
 def _has_queues_permission(current_user: dict) -> bool:
@@ -315,7 +321,9 @@ def finalize_qa_task(
     )
     task = _load_task_or_404(db, task_id)
     result = crud.qa_task_payload(task)
-    result["next_task_id"] = crud.next_qa_task_id(db, task.qa_queue_id, int(task.sequence or 0))
+    result["next_task_id"] = crud.next_qa_task_id(
+        db, task.qa_queue_id, int(task.sequence or 0), str(current_user["id"])
+    )
     return result
 
 
@@ -350,7 +358,70 @@ def return_qa_task(
     )
     return {
         "success": True,
-        "next_task_id": crud.next_qa_task_id(db, qa_queue_id, sequence),
+        "next_task_id": crud.next_qa_task_id(db, qa_queue_id, sequence, str(current_user["id"])),
+    }
+
+
+@router.put("/qa/tasks/{task_id}/draft")
+@router.post("/qa/tasks/{task_id}/draft")
+@router.put("/qa/tasks/{task_id}/draft/")
+@router.post("/qa/tasks/{task_id}/draft/")
+def save_qa_draft(
+    task_id: str,
+    payload: QaDraftRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Save the reviewer's in-progress final form (Save / Stop and resume later)."""
+    task = _load_task_or_404(db, task_id)
+    _require_qa_task_access(db, task, current_user)
+    if task.status != "submitted":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only tasks awaiting review can be edited.",
+        )
+    crud.save_qa_draft(db, task, current_user, payload.data, payload.qa_notes, payload.elapsed_seconds)
+    return crud.qa_task_payload(task)
+
+
+@router.post("/qa/tasks/{task_id}/release")
+@router.put("/qa/tasks/{task_id}/release")
+@router.post("/qa/tasks/{task_id}/release/")
+@router.put("/qa/tasks/{task_id}/release/")
+def release_qa_task(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Discard the reviewer's QA draft; the task stays awaiting review."""
+    task = _load_task_or_404(db, task_id)
+    _require_qa_task_access(db, task, current_user)
+    crud.release_qa_task(db, task)
+    return {
+        "success": True,
+        "next_task_id": crud.next_qa_task_id(
+            db, task.qa_queue_id, int(task.sequence or 0), str(current_user["id"])
+        ),
+    }
+
+
+@router.post("/qa/tasks/{task_id}/skip")
+@router.put("/qa/tasks/{task_id}/skip")
+@router.post("/qa/tasks/{task_id}/skip/")
+@router.put("/qa/tasks/{task_id}/skip/")
+def skip_qa_task(
+    task_id: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Move to another task awaiting review (no state change)."""
+    task = _load_task_or_404(db, task_id)
+    _require_qa_task_access(db, task, current_user)
+    return {
+        "success": True,
+        "next_task_id": crud.next_qa_task_id(
+            db, task.qa_queue_id, int(task.sequence or 0), str(current_user["id"])
+        ),
     }
 
 
@@ -370,6 +441,6 @@ def read_qa_queue(
     queue = crud.get_queue(db, qa_queue_id)
     if queue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue not found")
-    payload = crud.list_qa_tasks(db, queue)
+    payload = crud.list_qa_tasks(db, queue, str(current_user["id"]))
     payload["queue"] = _queue_response(payload["queue"])
     return payload

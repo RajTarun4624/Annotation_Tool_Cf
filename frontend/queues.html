@@ -13,7 +13,7 @@
     [data-hover=qatag]:hover{background:#f3e8ff!important;border-color:#d8b4fe!important}
     [data-hover=linkbtn]:hover{color:#1d4ed8!important}
     @media (max-width:640px){[data-stack=sm]{flex-direction:column!important;align-items:stretch!important}[data-stack=sm]>*{width:100%!important;max-width:none!important}}
-    @media (max-width:720px){[data-grid=form5]{grid-template-columns:repeat(2,minmax(0,1fr))!important}[data-grid=form2]{grid-template-columns:minmax(0,1fr)!important}}
+    @media (max-width:720px){[data-grid=form4]{grid-template-columns:repeat(2,minmax(0,1fr))!important}[data-grid=form2]{grid-template-columns:minmax(0,1fr)!important}}
   </style>
 </head>
 <body style="margin:0">
@@ -29,7 +29,11 @@
   const LABEL = (t) => App.sectionLabel(t);
 
   /* ── State ─────────────────────────────────────────────────────────────── */
+  // Optional project filter handed over by the Projects page "Open" action.
+  const pageParams = new URLSearchParams(location.search);
   const state = {
+    projectId: (pageParams.get("project") || "").trim(),
+    projectName: (pageParams.get("project_name") || "").trim(),
     queues: [],
     total: 0,
     page: 1,
@@ -180,22 +184,56 @@
     '<button type="button" data-hover="linkbtn" style="display:none;padding:4px 8px;border:0;background:none;cursor:pointer;font-family:inherit;' +
       'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#2563eb;transition:color .15s">Clear filters</button>',
   );
+  // Project chip: shows which project the list is scoped to; its × drops the scope.
+  const projectChip = App.el(
+    '<span data-role="project-chip" style="display:none;align-items:center;gap:6px;height:36px;padding:0 10px 0 12px;border-radius:8px;' +
+      'border:1px solid #bfdbfe;background:#eff6ff;color:#1e40af;font-size:12px;font-weight:600;white-space:nowrap;max-width:320px">' +
+      '<span style="color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;font-size:10px">Project</span>' +
+      '<span data-role="project-chip-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>' +
+      '<button type="button" data-role="project-chip-clear" aria-label="Show all projects" title="Show all projects" ' +
+      'style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:transparent;color:#1e40af;cursor:pointer;font-size:14px;line-height:1;font-family:inherit">×</button>' +
+      "</span>",
+  );
+  function clearProjectFilter() {
+    state.projectId = ""; state.projectName = "";
+    const url = new URL(location.href);
+    url.searchParams.delete("project"); url.searchParams.delete("project_name");
+    history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
+    syncProjectChip();
+  }
+  function syncProjectChip() {
+    const nameEl = projectChip.querySelector('[data-role="project-chip-name"]');
+    const label = state.projectName || (state.queues.find((q) => q.project_id === state.projectId) || {}).project_name || "Selected project";
+    nameEl.textContent = label;
+    projectChip.title = label;
+    projectChip.style.display = state.projectId ? "inline-flex" : "none";
+  }
+  projectChip.querySelector('[data-role="project-chip-clear"]').addEventListener("click", () => {
+    clearProjectFilter();
+    state.page = 1;
+    syncClearFilters();
+    loadData();
+  });
   clearBtn.addEventListener("click", () => {
     state.status = ""; state.priority = ""; state.createdFrom = ""; state.createdTo = "";
+    clearProjectFilter();
     statusSel.value = ""; prioritySel.value = ""; fromInput.value = ""; toInput.value = "";
     state.page = 1;
     syncClearFilters();
     loadData();
   });
+  filterBar.appendChild(projectChip);
   filterBar.appendChild(statusSel);
   filterBar.appendChild(prioritySel);
   filterBar.appendChild(fromWrap);
   filterBar.appendChild(toWrap);
   filterBar.appendChild(clearBtn);
   function syncClearFilters() {
-    const has = !!(state.status || state.priority || state.createdFrom || state.createdTo);
+    const has = !!(state.status || state.priority || state.createdFrom || state.createdTo || state.projectId);
     clearBtn.style.display = has ? "inline-flex" : "none";
   }
+  syncProjectChip();
+  syncClearFilters();
 
   // Table panel.
   const panel = App.el('<div style="' + GLASS + 'padding:16px;overflow:hidden;box-sizing:border-box"></div>');
@@ -213,6 +251,7 @@
       const params = new URLSearchParams();
       params.set("page", String(state.page));
       params.set("page_size", String(state.pageSize));
+      if (state.projectId) params.set("project_id", state.projectId);
       if (state.tab !== "all") params.set("annotation_type", state.tab);
       if (state.searchTerm) params.set("search", state.searchTerm);
       if (state.status) params.set("status", state.status);
@@ -225,6 +264,7 @@
       const total = Array.isArray(qResp) ? qResp.length : qResp && qResp.total != null ? qResp.total : items.length;
       state.queues = items;
       state.total = total;
+      syncProjectChip();
     } catch (err) {
       if (seq !== loadSeq) return;
       App.toast.error(err.message || "Unable to load queues.");
@@ -279,14 +319,21 @@
     );
   }
 
+  // Small progress circle (no percentage) with the done / total count beside it.
+  // Production: done = tasks whose annotation round is complete (submitted to QA or approved).
+  // QA: done = tasks reviewed (approved).
   function renderProgress(r) {
     const isQa = r.annotation_type === "qa";
     const total = num(r.total_tasks);
-    const done = num(r.approved_tasks);
+    const done = isQa ? num(r.approved_tasks) : num(r.submitted_tasks) + num(r.approved_tasks);
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     return (
-      '<div style="min-width:0">' + App.progress(pct, isQa ? "#7c3aed" : "#1d4ed8", true) +
-      '<span style="display:block;font-size:11px;color:#64748b;margin-top:2px">' + done + " / " + total + (isQa ? " reviewed" : " finalised") + "</span></div>"
+      '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+      App.progressRing(pct, isQa ? "#7c3aed" : "#1d4ed8", 22, false) +
+      '<div style="min-width:0;line-height:1.3">' +
+      '<span style="display:block;font-size:13px;font-weight:700;color:#0f172a;font-family:' + App.tokens.MONO + ';font-variant-numeric:tabular-nums;white-space:nowrap">' + done + " / " + total + "</span>" +
+      '<span style="display:block;font-size:11px;color:#64748b">submitted</span>' +
+      "</div></div>"
     );
   }
 
@@ -325,7 +372,7 @@
       render: (r, i) => '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>" },
     { title: "Queue", key: "name", render: (r) => renderQueueCell(r) },
     { title: "Type", key: "annotation_type", width: 110, render: (r) => App.typePill(r.annotation_type) },
-    { title: "Tasks", key: "progress", width: 200, render: (r) => renderProgress(r) },
+    { title: "Tasks", key: "progress", width: 130, render: (r) => renderProgress(r) },
     { title: "Status", key: "status", width: 130, render: (r) => App.statusPill(r.status || "inactive") },
     { title: "Priority", key: "priority", width: 100, render: (r) => App.priorityPill(r.priority) },
     { title: "SLA", key: "sla_hours", width: 70, align: "center", render: (r) => App.slaBadge(r.sla_hours) },
@@ -650,14 +697,13 @@
     const nameInput = namesGrid.querySelector('[data-role="name"]');
     const taskNameInput = namesGrid.querySelector('[data-role="task_name"]');
 
-    // Type / Priority / SLA / Timer / Required annotators.
+    // Type / Priority / SLA / Timer. Required annotators is fixed server-side (3 for production, 1 for QA).
     const settingsGrid = App.el(
-      '<div data-grid="form5" style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px">' +
+      '<div data-grid="form4" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px">' +
         "<div>" + labelRow("Type") + '<div data-role="type"></div></div>' +
         "<div>" + labelRow("Priority") + '<div data-role="priority"></div></div>' +
         "<div>" + labelRow("SLA (h)") + '<input type="number" min="1" max="720" step="1" value="24" data-role="sla" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
         "<div>" + labelRow("Timer (min)") + '<input type="number" min="1" max="90000" step="1" value="120" data-role="timer" data-hover="fieldfocus" style="' + fieldStyle + '"></div>' +
-        "<div>" + labelRow("Annotators") + '<div data-role="required"></div></div>' +
         "</div>",
     );
     const typeSel = App.select({ options: [{ label: "Production", value: "production" }, { label: "QA", value: "qa" }], value: "production" });
@@ -665,26 +711,19 @@
       options: [{ label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }, { label: "Critical", value: "critical" }],
       value: "medium",
     });
-    const requiredSel = App.select({ options: [1, 2, 3, 4, 5].map((n) => ({ label: String(n), value: n })), value: 3 });
     settingsGrid.querySelector('[data-role="type"]').appendChild(typeSel);
     settingsGrid.querySelector('[data-role="priority"]').appendChild(prioritySelC);
-    settingsGrid.querySelector('[data-role="required"]').appendChild(requiredSel);
     const slaInput = settingsGrid.querySelector('[data-role="sla"]');
     const timerInput = settingsGrid.querySelector('[data-role="timer"]');
     const qaNote = App.el(
       '<p data-role="qanote" style="margin:-4px 0 0;display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">' +
         App.icon("AiOutlineInfoCircle", { size: 12, color: "#7e22ce" }) +
-        '<span>A linked <span style="font-weight:600;color:#7e22ce">QA queue</span> is created automatically. Every assigned annotator reviews every prompt; a task moves to QA once the required number of annotators have submitted.</span></p>',
+        '<span>A linked <span style="font-weight:600;color:#7e22ce">QA queue</span> is created automatically. Every assigned annotator reviews every prompt; a task moves to QA once three annotators have submitted.</span></p>',
     );
     function syncTypeUi() {
       const isQa = typeSel.value === "qa";
-      requiredSel.disabled = isQa;
-      requiredSel.style.opacity = isQa ? ".55" : "";
-      requiredSel.style.cursor = isQa ? "not-allowed" : "pointer";
-      if (isQa) requiredSel.value = "1"; else if (requiredSel.value === "1" && requiredSel.dataset.userSet !== "1") requiredSel.value = "3";
       qaNote.style.display = isQa ? "none" : "flex";
     }
-    requiredSel.addEventListener("change", () => { requiredSel.dataset.userSet = "1"; });
     typeSel.addEventListener("change", syncTypeUi);
     syncTypeUi();
 
@@ -778,9 +817,9 @@
           (columnsHtml ? '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;margin-right:2px">Columns</span>' + columnsHtml + "</div>" : "") +
           '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;color:#0f172a;min-width:420px">' +
           '<thead><tr>' +
-          '<th style="text-align:center;width:36px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">#</th>' +
-          '<th style="text-align:left;width:160px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">Dataset</th>' +
-          '<th style="text-align:left;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#000;background:rgba(248,250,252,.8);border-bottom:1px solid #e2e8f0">Prompt</th>' +
+          '<th style="text-align:center;width:36px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#1e3a8a;background:#eff6ff;border-bottom:1px solid #bfdbfe">#</th>' +
+          '<th style="text-align:left;width:160px;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#1e3a8a;background:#eff6ff;border-bottom:1px solid #bfdbfe">Dataset</th>' +
+          '<th style="text-align:left;padding:6px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#1e3a8a;background:#eff6ff;border-bottom:1px solid #bfdbfe">Prompt</th>' +
           "</tr></thead><tbody>" +
           first.map((r, i) => {
             const text = String(r.input || "").replace(/\s+/g, " ").trim();
@@ -850,13 +889,12 @@
       const newProjectName = newProjectInput.value.trim();
       const sla = Number(slaInput.value);
       const timerMin = Number(timerInput.value);
-      const required = typeSel.value === "qa" ? 1 : Number(requiredSel.value) || 3;
+      const required = typeSel.value === "qa" ? 1 : 3;
       if (cs.projectMode === "existing" && !(projectSel && projectSel.value)) { App.toast.warning("Select a project for this queue."); return; }
       if (cs.projectMode === "new" && newProjectName.length < 2) { App.toast.warning("New project name must be at least 2 characters."); return; }
       if (name.length < 2) { App.toast.warning("Queue name must be at least 2 characters."); nameInput.focus(); return; }
       if (!Number.isFinite(sla) || sla < 1 || sla > 720) { App.toast.warning("SLA must be between 1 and 720 hours."); slaInput.focus(); return; }
       if (!Number.isFinite(timerMin) || timerMin < 1 || timerMin > 90000) { App.toast.warning("Timer must be between 1 and 90000 minutes."); timerInput.focus(); return; }
-      if (required < 1 || required > 5) { App.toast.warning("Required annotators must be between 1 and 5."); return; }
       const rows = cs.parsed && Array.isArray(cs.parsed.rows) ? cs.parsed.rows : [];
       if (!rows.length) { App.toast.warning("Upload a spreadsheet with at least one prompt."); return; }
       if (rows.length > 5000) { App.toast.warning("Sheet has more than 5000 prompt rows."); return; }

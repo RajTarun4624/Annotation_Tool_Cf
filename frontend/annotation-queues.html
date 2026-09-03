@@ -197,14 +197,6 @@
       "</span></div>"
     );
   }
-  function renderAnnotators(r) {
-    const n = r.required_annotators == null ? "—" : String(r.required_annotators);
-    return (
-      '<span data-tip="Annotators required per task" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;font-family:' + MONO +
-      ';font-weight:700;font-size:12px;background:#f1f5f9;color:#0f172a;padding:2px 10px;border-radius:4px;white-space:nowrap">' +
-      App.icon("AiOutlineTeam", { size: 12, color: "#475569" }) + esc(n) + "</span>"
-    );
-  }
   function renderTimer(s) {
     return (
       '<span style="display:inline-flex;align-items:center;justify-content:center;font-family:' + MONO +
@@ -243,13 +235,14 @@
           '<span style="font-family:' + MONO + ';font-size:12px;font-weight:600;color:#000">' + ((state.page - 1) * state.pageSize + i + 1) + "</span>",
       },
       {
-        title: "Queue", key: "name", width: 220, ellipsis: true,
+        // Wide, non-truncating column: the full queue name is always readable and the
+        // remaining columns shift right into the free space (long names wrap instead of clipping).
+        title: "Queue", key: "name", width: 460,
         render: (r) =>
-          '<span title="' + esc(r.name) + '" style="display:block;font-size:14px;font-weight:600;color:#000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>",
+          '<span title="' + esc(r.name) + '" style="display:block;font-size:14px;font-weight:600;color:#000;white-space:normal;word-break:break-word;line-height:1.4">' + esc(r.name) + "</span>",
       },
     ];
 
-    if (isProduction()) cols.push({ title: "Annotators", key: "_annotators", width: 110, render: renderAnnotators });
     cols.push(
       { title: "Timer / Task", key: "timer_seconds", width: 130, render: (r) => renderTimer(r.timer_seconds) },
       { title: "Priority", key: "priority", width: 110, render: (r) => renderPriority(r.priority) },

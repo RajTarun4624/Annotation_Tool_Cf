@@ -123,14 +123,20 @@
     { title: "Assigned", width: 200, render: (r) => renderAssignees(r) },
     { title: "Created", width: 130, render: (r) => '<span style="font-size:13px;color:#334155;white-space:nowrap">' + escapeHtml(fmt.date(r.created_at)) + "</span>" },
     {
-      title: "Actions", width: 100, align: "center",
+      title: "Actions", width: 130, align: "center",
       render: (r) => {
         const cell = el(
           '<div style="display:flex;justify-content:center;gap:4px">' +
+            '<button type="button" data-role="open" data-tip="Open project queues" data-hover="btn-text" style="' + ICON_BTN + 'color:#1d4ed8">' + icon("AiOutlineFolderOpen", { size: 15 }) + "</button>" +
             '<button type="button" data-role="edit" data-tip="Edit project" data-hover="btn-text" style="' + ICON_BTN + 'color:#000">' + icon("AiOutlineEdit", { size: 15 }) + "</button>" +
             '<button type="button" data-role="delete" data-tip="Delete project" data-hover="btn-danger-text" style="' + ICON_BTN + 'color:#e11d48">' + icon("AiOutlineDelete", { size: 15 }) + "</button>" +
           "</div>",
         );
+        // Open: the Queues page filtered to this project (it reads ?project=<id>&project_name=<name>).
+        cell.querySelector('[data-role="open"]').addEventListener("click", () => {
+          const q = new URLSearchParams({ project: String(r.id || ""), project_name: String(r.name || "") });
+          location.href = "queues.html?" + q.toString();
+        });
         cell.querySelector('[data-role="edit"]').addEventListener("click", () => openModal(r));
         cell.querySelector('[data-role="delete"]').addEventListener("click", (e) => handleDelete(r, e.currentTarget));
         return cell;

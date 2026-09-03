@@ -11,7 +11,7 @@
  *   AnnotationForm.emptyValue(taxonomy) -> a blank value with taxonomy defaults applied
  *
  * Value shape (SPEC2 §2):
- *   { data_type, data_structure, attack_type: [], attack_subcategory: [], domain, role,
+ *   { data_type, data_structure, attack_type: [], attack_subcategory: [], domain, role: [],
  *     verified: bool, language, source_description, document_edited: bool,
  *     severity: {J, I, L}, intention, source }
  * ========================================================================== */
@@ -25,7 +25,7 @@
   const SEVERITY_SHORT = { J: "Jailbreak", I: "Injection", L: "Leakage" };
   const OUTPUT_KEYS = ["jailbreak", "prompt_injection", "prompt_leakage"];
   const OUTPUT_TITLE = { jailbreak: "Jailbreak", prompt_injection: "Prompt injection", prompt_leakage: "Prompt leakage" };
-  const SINGLE_FIELDS = ["data_type", "data_structure", "domain", "role", "intention", "language", "source"];
+  const SINGLE_FIELDS = ["data_type", "data_structure", "domain", "intention", "language", "source"];
   const BENIGN = "benign";
 
   const FIELD_LABELS = {
@@ -237,7 +237,7 @@
       attack_type: [],
       attack_subcategory: [],
       domain: "",
-      role: "",
+      role: [],
       verified: toBool(d.verified),
       language: d.language == null ? "en" : String(d.language),
       source_description: "",
@@ -270,6 +270,10 @@
     let types = uniq(toList(v.attack_type)).filter((t) => knownTypes[t] != null);
     types.sort((a, b) => knownTypes[a] - knownTypes[b]);
     out.attack_type = types;
+    const knownRoles = tax._order.role || {};
+    const roles = uniq(toList(v.role)).filter((r) => knownRoles[r] != null);
+    roles.sort((a, b) => knownRoles[a] - knownRoles[b]);
+    out.role = roles;
     const selected = new Set(types);
     let subs = uniq(toList(v.attack_subcategory)).filter((s) => tax._subGroup[s] != null && selected.has(tax._subGroup[s]));
     subs.sort((a, b) => tax._subOrder[a] - tax._subOrder[b]);
@@ -321,13 +325,25 @@
       if (types.includes(BENIGN) && types.length > 1) push("attack_type", "Benign cannot be combined with other attack types.");
     }
 
+    const roles = toList(v.role);
+    if (!roles.length) push("role", "Select at least one role.");
+    else {
+      const badRole = roles.find((r) => (tax._order.role || {})[r] == null);
+      if (badRole != null) push("role", 'Unknown role "' + badRole + '".');
+    }
+
     if (types.length && !isBenignOnly(types)) {
       const subs = toList(v.attack_subcategory);
       const selected = new Set(types);
-      if (!subs.length) push("attack_subcategory", "Select at least one attack subcategory.");
+      const stray = subs.find((s) => tax._subGroup[s] == null || !selected.has(tax._subGroup[s]));
+      if (stray != null) push("attack_subcategory", '"' + stray + '" does not belong to a selected attack type.');
       else {
-        const stray = subs.find((s) => tax._subGroup[s] == null || !selected.has(tax._subGroup[s]));
-        if (stray != null) push("attack_subcategory", '"' + stray + '" does not belong to a selected attack type.');
+        // Exactly one subcategory per selected attack type that has subcategories.
+        const withSubs = types.filter((t) => t !== BENIGN && (tax.attack_subcategory[t] || []).length);
+        const missing = withSubs.find((t) => !subs.some((s) => tax._subGroup[s] === t));
+        const extra = withSubs.find((t) => subs.filter((s) => tax._subGroup[s] === t).length > 1);
+        if (missing) push("attack_subcategory", "Select one subcategory for " + (tax._labels.attack_type[missing] || missing) + ".");
+        else if (extra) push("attack_subcategory", "Select only one subcategory for " + (tax._labels.attack_type[extra] || extra) + ".");
       }
     }
 
@@ -510,13 +526,51 @@
       return wrap;
     }
 
-    /* ---- subcategories ---- */
+    /* ---- role chips (multi-select) ---- */
+    function toggleRole(r) {
+      if (readOnly) return;
+      const has = state.role.includes(r);
+      const next = has ? state.role.filter((x) => x !== r) : state.role.concat([r]);
+      state = normalise(Object.assign({}, state, { role: next }), tax);
+      clearError("role");
+      paintRoleChips();
+      emit();
+    }
+    function buildRoleChips() {
+      const wrap = h('<div role="group" aria-label="Role" style="display:flex;flex-wrap:wrap;gap:8px"></div>');
+      tax.role.forEach((opt) => {
+        const btn = h(
+          '<button type="button" data-role-chip="' + esc(opt.value) + '" data-hover="chiptoggle" style="' + CHIP_BASE + CHIP_OFF + '">' +
+            '<span data-check style="display:none;line-height:0">' + App.icon("AiOutlineCheck", { size: 13 }) + "</span>" +
+            esc(opt.label) + "</button>",
+        );
+        btn.addEventListener("click", () => toggleRole(opt.value));
+        wrap.appendChild(btn);
+      });
+      refs.roleChips = wrap;
+      return wrap;
+    }
+    function paintRoleChips() {
+      if (!refs.roleChips) return;
+      const selected = new Set(state.role);
+      App.qsa("[data-role-chip]", refs.roleChips).forEach((btn) => {
+        const on = selected.has(btn.dataset.roleChip);
+        btn.setAttribute("style", CHIP_BASE + (on ? "border:1px solid #2563eb;background:#eff6ff;color:#1d4ed8;" : CHIP_OFF) + (readOnly ? "cursor:default;" : "cursor:pointer;"));
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+        const check = btn.querySelector("[data-check]");
+        if (check) check.style.display = on ? "inline-flex" : "none";
+      });
+    }
+
+    /* ---- subcategories: one per attack type (radio per group) ---- */
+    const subRadioName = "sub-" + Math.random().toString(36).slice(2, 8);
     function toggleSub(value, checked) {
       if (readOnly) return;
-      const set = new Set(state.attack_subcategory);
-      if (checked) set.add(value); else set.delete(value);
-      state = normalise(Object.assign({}, state, { attack_subcategory: Array.from(set) }), tax);
+      const group = tax._subGroup[value];
+      const kept = state.attack_subcategory.filter((s) => tax._subGroup[s] !== group);
+      state = normalise(Object.assign({}, state, { attack_subcategory: checked ? kept.concat([value]) : kept }), tax);
       clearError("attack_subcategory");
+      paintSubcats();
       emit();
     }
     function paintSubcats() {
@@ -553,19 +607,17 @@
         const list = h('<div style="display:grid;grid-template-columns:1fr;gap:6px;padding-left:2px"></div>');
         (tax.attack_subcategory[t] || []).forEach((opt) => {
           const itemWrap = h('<div style="display:flex;flex-direction:column;gap:2px;padding:4px 6px;border-radius:6px;background:rgba(248,250,252,0.6);border:1px solid #f1f5f9"></div>');
-          const cb = App.checkbox({
-            checked: selected.has(opt.value),
-            label: opt.label,
-            value: opt.value,
-            disabled: readOnly,
-            onChange: (checked) => toggleSub(opt.value, checked),
-          });
-          cb.style.fontSize = "13px";
-          cb.style.fontWeight = "600";
-          cb.style.color = "#000000";
-          cb.style.alignItems = "flex-start";
-          cb.style.lineHeight = "1.35";
-          cb.input.style.marginTop = "2px";
+          const cb = h(
+            '<label style="display:inline-flex;align-items:flex-start;gap:8px;cursor:' + (readOnly ? "not-allowed;opacity:.55" : "pointer") +
+              ';font-size:13px;font-weight:600;color:#000000;line-height:1.35;user-select:none">' +
+              '<input type="radio" name="' + esc(subRadioName + "-" + t) + '" style="width:16px;height:16px;accent-color:#1d4ed8;cursor:inherit;margin:2px 0 0;flex-shrink:0">' +
+              "<span>" + esc(opt.label) + "</span></label>",
+          );
+          const input = cb.querySelector("input");
+          input.checked = selected.has(opt.value);
+          input.disabled = readOnly;
+          input.value = opt.value;
+          input.addEventListener("change", () => toggleSub(opt.value, input.checked));
           itemWrap.appendChild(cb);
           if (opt.description || opt.example) {
             const descHtml =
@@ -612,6 +664,7 @@
     function applyReadOnly() {
       SINGLE_FIELDS.concat(["verified"]).forEach((k) => { const sel = refs.controls[k]; if (sel) styleSelect(sel, readOnly); });
       paintChips();
+      paintRoleChips();
       paintSubcats();
       paintSeverity();
       const ta = refs.controls.source_description;
@@ -660,7 +713,7 @@
       cls.appendChild(g1);
       cls.appendChild(fieldWrap("attack_type", esc("Attack type") + '<span style="font-weight:500;color:#64748b">multi-select · Benign is exclusive</span>', buildChips()));
       refs.subBox = h('<div style="' + BOX_STYLE + '"></div>');
-      refs.subField = fieldWrap("attack_subcategory", esc("Attack subcategory"), refs.subBox);
+      refs.subField = fieldWrap("attack_subcategory", esc("Attack subcategory") + '<span style="font-weight:500;color:#64748b">one per attack type</span>', refs.subBox);
       cls.appendChild(refs.subField);
 
       /* Severity (placed right after Attack subcategory) */
@@ -689,10 +742,10 @@
       const ctx = section("Context & Verification");
       const g2 = grid2();
       g2.appendChild(singleField("domain", "Select domain"));
-      g2.appendChild(singleField("role", "Select role"));
       g2.appendChild(singleField("language"));
       g2.appendChild(singleField("source"));
       ctx.appendChild(g2);
+      ctx.appendChild(fieldWrap("role", esc("Role") + '<span style="font-weight:500;color:#64748b">multi-select · every role present in the prompt</span>', buildRoleChips()));
       const g3 = grid2();
       g3.appendChild(
         fieldWrap(

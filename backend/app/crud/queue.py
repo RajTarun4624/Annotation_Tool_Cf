@@ -324,10 +324,13 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
 
     Production queue: done = tasks with a SUBMITTED annotation by this user;
       status = completed (queue completed, or done == total > 0)
-             | in_progress (any draft/submitted annotation by this user)
-             | active.
+             | in_progress (this user has an open DRAFT, i.e. they stopped
+               a task to resume later)
+             | active (nothing open: fresh queue, or every touched task was
+               submitted / released / declined / skipped -> "Start Working").
     QA queue: done = approved tasks routed to it; status = completed (queue
-      completed) | in_progress (anything approved) | active.
+      completed) | in_progress (this reviewer has a paused QA draft in it)
+      | active.
     """
     if not queues:
         return
@@ -348,9 +351,22 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
             .all()
         )
         for qid, astatus, n in rows:
-            touched.add(qid)
-            if astatus == "submitted":
+            if astatus == "draft":
+                touched.add(qid)
+            elif astatus == "submitted":
                 done_by_queue[qid] = int(n or 0)
+
+    # QA queues: a paused QA draft (tasks.draft_data.user_id == caller) means "resume".
+    qa_ids = [q.id for q in queues if (q.annotation_type or "production") == "qa"]
+    qa_draft_queues: set[uuid.UUID] = set()
+    if qa_ids:
+        for qid, draft in (
+            db.query(Task.qa_queue_id, Task.draft_data)
+            .filter(Task.qa_queue_id.in_(qa_ids), Task.status == "submitted")
+            .all()
+        ):
+            if isinstance(draft, dict) and str(draft.get("user_id") or "") == str(uid):
+                qa_draft_queues.add(qid)
 
     for queue, item in zip(queues, items):
         if item["annotation_type"] == "qa":
@@ -358,7 +374,7 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
             item["user_done_tasks"] = done
             if item["status"] == "completed":
                 item["user_status"] = "completed"
-            elif done > 0:
+            elif queue.id in qa_draft_queues:
                 item["user_status"] = "in_progress"
             else:
                 item["user_status"] = "active"
@@ -519,8 +535,8 @@ def list_queue_tasks(
     only the returned task list is paginated.
 
     Production queue: tasks where ``Task.queue_id == id``; completed =
-    approved, remaining = total − approved, submitted_to_qa = submitted +
-    approved. QA queue: tasks where ``Task.qa_queue_id == id``; completed =
+    approved, submitted_to_qa = submitted + approved, remaining = total −
+    submitted_to_qa (still being annotated). QA queue: tasks where ``Task.qa_queue_id == id``; completed =
     approved, remaining = awaiting (submitted).
     """
     queue = _load_queue(db, queue_id)
@@ -539,11 +555,15 @@ def list_queue_tasks(
     else:
         total = queue_dict["total_tasks"]
         completed = queue_dict["approved_tasks"]
-        remaining = max(total - completed, 0)
         submitted_to_qa = queue_dict["submitted_tasks"] + completed
+        # Remaining = tasks still being annotated (not yet submitted to QA).
+        remaining = max(total - submitted_to_qa, 0)
         task_filter = Task.queue_id == queue.id
 
-    progress = round((completed / total) * 100) if total else 0
+    # Progress: QA queues count reviewed (approved) tasks; production queues count
+    # tasks whose annotation round is complete (submitted to QA or already approved).
+    progressed = completed if is_qa else submitted_to_qa
+    progress = round((progressed / total) * 100) if total else 0
 
     summary = {
         "queue_name": queue_dict["name"],

@@ -57,14 +57,16 @@ OPTIONS: dict[str, list[dict[str, Any]]] = {
         ("creative_writing", "Creative Writing"),
         ("other", "Other"),
     ),
+    # Multi-select: every conversation role present in the prompt (customer sample:
+    # ["system", "user", "assistant", "tool_input", "tool_output", "env_feedback"]).
     "role": _opts(
-        ("system_prompt", "System prompt"),
+        ("system", "System"),
         ("user", "User"),
         ("assistant", "Assistant"),
         ("memory", "Memory"),
         ("tool_input", "Tool input"),
         ("tool_output", "Tool output"),
-        ("environmental_feedback", "Environmental feedback"),
+        ("env_feedback", "Environment feedback"),
         ("general", "General"),
     ),
     # Boolean field, exposed as two options for the dropdown.
@@ -306,20 +308,29 @@ def subcategory_label(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+# Customer "Data Length Distribution" ranges (upper bound exclusive), spec section 6.
+LENGTH_BUCKETS: list[tuple[int, str]] = [
+    (100, "< 100 char"),
+    (500, "100 - 500 char"),
+    (1_000, "500 - 1,000 char"),
+    (5_000, "1,000 - 5,000 char"),
+    (10_000, "5,000 - 10K char"),
+    (20_000, "10K - 20K char"),
+    (50_000, "20K - 50K char"),
+    (100_000, "50K - 100K char"),
+    (500_000, "100K - 500K char"),
+    (1_000_000, "500K - 1M char"),
+]
+LENGTH_BUCKET_MAX = "1M+ char"
+
+
 def length_bucket(n: int | None) -> str:
-    """Bucket a character count the way the customer record expects."""
+    """Bucket a character count into the customer's length distribution ranges."""
     n = int(n or 0)
-    if n < 100:
-        return "< 100 char"
-    if n < 500:
-        return "100 - 500 char"
-    if n < 1000:
-        return "500 - 1,000 char"
-    if n < 5000:
-        return "1,000 - 5,000 char"
-    if n < 10000:
-        return "5,000 - 10,000 char"
-    return "10,000+ char"
+    for upper, label in LENGTH_BUCKETS:
+        if n < upper:
+            return label
+    return LENGTH_BUCKET_MAX
 
 
 def taxonomy_payload() -> dict[str, Any]:
