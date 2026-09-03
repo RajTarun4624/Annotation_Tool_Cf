@@ -365,7 +365,7 @@
 
   /* ── Styles ────────────────────────────────────────────────────────────── */
   const CHIP_BASE =
-    "display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:600;" +
+    "display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:6px;font-size:13px;font-weight:600;" +
     "font-family:inherit;line-height:1;white-space:nowrap;transition:background .15s, color .15s, border-color .15s;user-select:none;";
   const CHIP_OFF = "border:1px solid #cbd5e1;background:#fff;color:#0f172a;";
   const CHIP_ON = "border:1px solid #2563eb;background:#eff6ff;color:#1d4ed8;";
