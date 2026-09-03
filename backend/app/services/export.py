@@ -192,8 +192,6 @@ def collect_export_rows(db: Session, queue: Queue, scope: str = "final") -> list
             record = build_record(task, annotations, task.final_data)
         else:
             record = _record_for(task, annotations)
-        if scope == "all":
-            record["status"] = task.status or "pending"
         rows.append({"task": task, "record": record, "annotations": annotations})
     return rows
 
@@ -355,7 +353,6 @@ def export_single_task(db: Session, task: Task, fmt: str = "json") -> tuple[byte
         record = build_record(task, annotations, task.final_data)
     else:
         record = _record_for(task, annotations)
-    record["status"] = task.status or "pending"
 
     row = {"task": task, "record": record, "annotations": annotations}
     prod = task.queue

@@ -229,15 +229,15 @@ def _record_or_none(task: Task, annotations: list[TaskAnnotation], final: dict[s
 
 def agreement_level(agreement: dict[str, Any]) -> str | None:
     """Collapse the per-field agreement dict into one badge level for lists:
-    "full" when every customer key is full, "none" when any is none,
+    "full" when every customer key is full, "split" when any is none,
     otherwise "majority". None when there is nothing to compare."""
     if not agreement:
         return None
     levels = [v for k, v in agreement.items() if k != "consensus_reached"]
     if not levels:
         return None
-    if any(v == "none" for v in levels):
-        return "none"
+    if any(v == "split" for v in levels):
+        return "split"
     if all(v == "full" for v in levels):
         return "full"
     return "majority"

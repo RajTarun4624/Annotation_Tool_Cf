@@ -440,16 +440,16 @@ def majority(values: list[Any], kind: str = "str") -> tuple[Any, str]:
 
     * ``"full"`` — every annotator gave the same value;
     * ``"majority"`` — one value occurs more than N/2 times (>= 2 of 3);
-    * ``"none"`` — no value has a strict majority. The returned value is then
+    * ``"split"`` — no value has a strict majority. The returned value is then
       the median for ints (lower median, so it is always one of the inputs)
       and the FIRST annotator's value for everything else.
 
-    With an empty ``values`` list the level is ``"none"`` and the value is a
+    With an empty ``values`` list the level is ``"split"`` and the value is a
     neutral default (``[]`` / ``False`` / ``0`` / ``""``); with at least one
     value the result is never ``None``.
     """
     if not values:
-        return {"list": [], "bool": False, "int": 0}.get(kind, ""), "none"
+        return {"list": [], "bool": False, "int": 0}.get(kind, ""), "split"
 
     norm = [_normalise_value(v, kind) for v in values]
     n = len(norm)
@@ -465,8 +465,8 @@ def majority(values: list[Any], kind: str = "str") -> tuple[Any, str]:
         return _denormalise_value(best_value, kind), "majority"
 
     if kind == "int":
-        return int(statistics.median_low(norm)), "none"
-    return _denormalise_value(norm[0], kind), "none"
+        return int(statistics.median_low(norm)), "split"
+    return _denormalise_value(norm[0], kind), "split"
 
 
 # ─── Consensus ───────────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     output_prompt_injection, output_prompt_leakage, severity_J, severity_I,
     severity_L, intention, verified) plus the extra keys data_type,
     data_structure, domain, role, language, document_edited, source, each
-    valued "full" | "majority" | "none". ``consensus_reached`` is True only
+    valued "full" | "majority" | "split". ``consensus_reached`` is True only
     when the queue's required number of annotators have submitted and EVERY
     voted key (customer and extra) is "full", i.e. all of them gave
     identical answers. Fewer submissions than required -> False.
@@ -501,7 +501,7 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
 
     if not datas:
         for key in CUSTOMER_AGREEMENT_KEYS + EXTRA_AGREEMENT_KEYS:
-            agreement[key] = "none"
+            agreement[key] = "split"
         return {"majority": majority_data, "agreement": agreement, "consensus_reached": False}
 
     def vote(kind: str, values: list[Any], agreement_key: str) -> Any:
@@ -533,7 +533,7 @@ def compute_consensus(task: Any, annotations: Any) -> dict[str, Any]:
     # first non-empty description (not part of the agreement summary).
     descriptions = [d["source_description"] for d in datas]
     desc_value, desc_level = majority(descriptions, "str")
-    if desc_level == "none" or not desc_value:
+    if desc_level == "split" or not desc_value:
         desc_value = next((d for d in descriptions if d), desc_value)
     majority_data["source_description"] = desc_value
 
@@ -594,7 +594,7 @@ def build_record(task: Any, annotations: Any, final_data: Any) -> dict[str, Any]
         record[f"annotator_{index}"] = annotator_block(_annotation_data(annotation))
 
     record["inter_annotator_agreement"] = {
-        **{key: agreement.get(key, "none") for key in CUSTOMER_AGREEMENT_KEYS},
+        **{key: agreement.get(key, "split") for key in CUSTOMER_AGREEMENT_KEYS},
         "consensus_reached": bool(consensus["consensus_reached"]),
     }
     record["output"] = derive_output(final)
