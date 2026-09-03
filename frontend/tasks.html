@@ -11,7 +11,7 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903i"></script>
+<script src="js/app.js?v=20260903j"></script>
 <script>
 (async () => {
   await App.ensureSession();
@@ -24,6 +24,9 @@
 
   const { escapeHtml, fmt } = App;
   const MONO = App.tokens.MONO;
+  const BTN_SM =
+    "display:inline-flex;align-items:center;justify-content:center;gap:5px;height:28px;padding:0 10px;border-radius:6px;border:1px solid #cbd5e1;" +
+    "background:#fff;color:#0f172a;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;transition:.15s;";
   const GLASS = App.tokens.GLASS;
 
   /* ── Constants ──────────────────────────────────────────────────────────── */
@@ -269,7 +272,47 @@
     { title: "Finalised by", key: "finalized_by_name", width: 130, render: (r) => personCell(r.finalized_by_name) },
     { title: "Created", key: "created_at", width: 140, render: (r) => dateCell(r.created_at) },
     { title: "Finalised", key: "finalized_at", width: 140, render: (r) => dateCell(r.finalized_at) },
+    {
+      title: "Actions", key: "actions", width: 120, align: "right",
+      // Reinject sends a task that QA has finalised (status approved) back to the QA queue for
+      // re-evaluation. It is the only state the backend accepts, so every other row is disabled.
+      render: (r) => {
+        const approved = String(r.status || "").toLowerCase() === "approved";
+        const tip = approved
+          ? "Send this finalised task back to QA for re-evaluation"
+          : "Only tasks finalised in QA can be reinjected";
+        const wrap = App.el('<span data-tip="' + escapeHtml(tip) + '" style="display:inline-flex"></span>');
+        const btn = App.el(
+          '<button type="button" data-hover="btn-default" style="' + BTN_SM + (approved ? "" : "opacity:.45;cursor:not-allowed;") + '">' +
+            App.icon("AiOutlineUndo", { size: 12 }) + "<span>Reinject</span></button>",
+        );
+        btn.disabled = !approved;
+        if (!approved) btn.style.pointerEvents = "none";
+        else btn.addEventListener("click", (e) => { e.stopPropagation(); reinjectTask(r, btn); });
+        wrap.appendChild(btn);
+        return wrap;
+      },
+    },
   ];
+
+  async function reinjectTask(row, btn) {
+    const ok = await App.confirm({
+      title: "Reinject task?",
+      content: "This finalised task will be sent back to the QA queue for re-evaluation. Its final record is cleared until QA submits again.",
+      okText: "Reinject",
+    });
+    if (!ok) return;
+    App.setLoading(btn, true);
+    try {
+      await App.api("/tasks/" + encodeURIComponent(row.id) + "/reinject", { method: "POST" });
+      App.toast.success("Task reinjected into the QA queue.");
+      await load();
+    } catch (err) {
+      App.toast.error(err.message || "Failed to reinject task.");
+    } finally {
+      if (btn.isConnected) App.setLoading(btn, false);
+    }
+  }
 
   /* ── Render + load ──────────────────────────────────────────────────────── */
   function render() {
@@ -282,7 +325,7 @@
       rows: state.rows,
       rowKey: "id",
       loading: state.loading,
-      minWidth: 1100,
+      minWidth: 1220,
       emptyText: "No tasks found",
       pagination: {
         page: state.page,
