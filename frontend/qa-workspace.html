@@ -17,8 +17,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903t"></script>
-<script src="js/annotation-form.js?v=20260903t"></script>
+<script src="js/app.js?v=20260903u"></script>
+<script src="js/annotation-form.js?v=20260903u"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -289,6 +289,14 @@
   }
   const outputOf = (a) => (a && a.output && typeof a.output === "object" ? a.output : AnnotationForm.deriveOutput(a && a.data));
   const annotations = () => (state.detail && Array.isArray(state.detail.annotations) ? state.detail.annotations.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)) : []);
+  // Display name per response: the same annotator may answer more than once -> "Name (response 2)".
+  function annotatorLabel(a) {
+    const base = a.user_name || "Annotator " + (a.slot == null ? "" : a.slot);
+    const same = annotations().filter((x) => (x.user_id || x.user_name) === (a.user_id || a.user_name));
+    if (same.length <= 1) return base;
+    const n = same.findIndex((x) => x.id === a.id) + 1;
+    return base + " (response " + (n || 1) + ")";
+  }
   const currentValueJson = () => (state.form ? JSON.stringify(state.form.getValue()) : "");
   const currentNotes = () => (state.notesEl ? state.notesEl.value : "");
   const isEditable = () => !!(state.detail && state.detail.editable);
@@ -421,7 +429,7 @@
       html += "<thead><tr>";
       html += '<th style="' + TH + 'position:sticky;left:0;z-index:1">Field</th>';
       anns.forEach((a) => {
-        html += '<th style="' + TH + '">' + esc(a.user_name || "Annotator " + (a.slot == null ? "" : a.slot)) +
+        html += '<th style="' + TH + '">' + esc(annotatorLabel(a)) +
           '<div style="font-weight:500;text-transform:none;letter-spacing:0;color:#64748b;font-size:11px;white-space:nowrap">' +
           (a.submitted_at ? esc(fmt.date(a.submitted_at)) : "") + "</div></th>";
       });
@@ -450,7 +458,7 @@
             App.avatarInitial(name, 22) + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">' + esc(name) + "</span></span>" +
           OUTPUT_KEYS.map((k) => outputChip(k.label, !!(o && o[k.key]))).join("") + "</div>";
       let ohtml = "";
-      anns.forEach((a) => { ohtml += outRow(a.user_name || "Annotator " + (a.slot == null ? "" : a.slot), outputOf(a), false); });
+      anns.forEach((a) => { ohtml += outRow(annotatorLabel(a), outputOf(a), false); });
       ohtml += outRow("Majority", AnnotationForm.deriveOutput(majority), true);
       out.appendChild(App.el('<div style="display:flex;flex-direction:column;gap:8px">' + ohtml + "</div>"));
       card.appendChild(out);
@@ -503,7 +511,7 @@
   function prefillCandidates() {
     const d = state.detail || {};
     const list = [{ key: "majority", name: "Majority", data: d.majority && typeof d.majority === "object" ? d.majority : {} }];
-    annotations().forEach((a) => list.push({ key: a.user_id || "slot-" + a.slot, name: a.user_name || "Annotator " + (a.slot == null ? "" : a.slot), data: a.data || {} }));
+    annotations().forEach((a) => list.push({ key: a.id || a.user_id || "slot-" + a.slot, name: annotatorLabel(a), data: a.data || {} }));
     return list;
   }
   function detectPrefill() {

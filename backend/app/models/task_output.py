@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -17,8 +17,8 @@ class TaskOutput(Base):
 
     __tablename__ = "tasks_output"
     __table_args__ = (
-        UniqueConstraint("task_id", "user_id", name="uq_tasks_output_task_user"),
         Index("ix_tasks_output_task_id", "task_id"),
+        Index("ix_tasks_output_annotation_id", "annotation_id"),
         Index("ix_tasks_output_user_id", "user_id"),
         Index("ix_tasks_output_queue_id", "queue_id"),
         Index("ix_tasks_output_dataset", "dataset"),
@@ -26,6 +26,8 @@ class TaskOutput(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_id = Column(UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    # The response (task_annotations row) this output was built from; one row per response.
+    annotation_id = Column(UUID(as_uuid=True), nullable=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     user_name = Column(String, nullable=True)
     queue_id = Column(UUID(as_uuid=True), ForeignKey("queues.id", ondelete="CASCADE"), nullable=True)

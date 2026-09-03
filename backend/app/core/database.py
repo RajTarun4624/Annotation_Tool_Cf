@@ -97,3 +97,10 @@ def ensure_indexes() -> None:
     # Base.metadata.create_all creates every table and index defined on the
     # models that does not exist yet (no-op for existing ones).
     Base.metadata.create_all(bind=engine)
+    # Schema tweaks create_all cannot express (mirrors alembic 0005): several
+    # responses per annotator per task, each output row linked to its response.
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE task_annotations DROP CONSTRAINT IF EXISTS uq_task_annotations_task_user")
+        conn.exec_driver_sql("ALTER TABLE tasks_output DROP CONSTRAINT IF EXISTS uq_tasks_output_task_user")
+        conn.exec_driver_sql("ALTER TABLE tasks_output ADD COLUMN IF NOT EXISTS annotation_id UUID NULL")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_tasks_output_annotation_id ON tasks_output (annotation_id)")

@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -13,18 +13,19 @@ def utc_now() -> datetime:
 
 
 class TaskAnnotation(Base):
-    """One annotator's answer for one task.
+    """One RESPONSE to one task.
 
-    Every annotator assigned to a production queue annotates EVERY task, so
-    (task_id, user_id) is unique. ``data`` holds the annotation JSON described
-    in SPEC2 section 2; derived values (output, lengths) are never stored here.
+    Consensus needs N responses per task, not N distinct people, so the same
+    annotator may hold several rows for a task (response 1, 2, ...). At most
+    one of them is open (draft/returned) at a time. ``data`` holds the
+    annotation JSON described in SPEC2 section 2; derived values (output,
+    lengths) are never stored here.
 
     status: draft | submitted | returned
     """
 
     __tablename__ = "task_annotations"
     __table_args__ = (
-        UniqueConstraint("task_id", "user_id", name="uq_task_annotations_task_user"),
         Index("ix_task_annotations_task_id", "task_id"),
         Index("ix_task_annotations_user_id", "user_id"),
     )

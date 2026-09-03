@@ -126,12 +126,27 @@ def get_queue(db: Session, queue_id: str) -> Queue | None:
     return db.query(Queue).filter(Queue.id == queue_uuid).first()
 
 
-def get_my_annotation(task: Task, user_id: str) -> TaskAnnotation | None:
+def my_annotations(task: Task, user_id: str) -> list[TaskAnnotation]:
+    """Every response the user has on this task (submitted, declined, open)."""
     uid = _parse_uuid(user_id)
-    for ann in task.annotations or []:
-        if ann.user_id == uid:
+    return [a for a in (task.annotations or []) if a.user_id == uid]
+
+
+def get_my_annotation(task: Task, user_id: str) -> TaskAnnotation | None:
+    """The user's OPEN response on this task (draft / returned), or None.
+    Submitted and declined responses are history and never block a new one."""
+    for ann in my_annotations(task, user_id):
+        if (ann.status or "draft") in ("draft", "returned"):
             return ann
     return None
+
+
+def my_submitted_count(task: Task, user_id: str) -> int:
+    return sum(1 for a in my_annotations(task, user_id) if (a.status or "") == "submitted")
+
+
+def i_declined(task: Task, user_id: str) -> bool:
+    return any((a.status or "") == "declined" for a in my_annotations(task, user_id))
 
 
 def required_annotators_for(queue: Queue | None) -> int:
@@ -190,7 +205,8 @@ def task_payload(task: Task, user_id: str) -> dict[str, Any]:
     return {
         "task": serialize_task_block(task),
         "my_annotation": serialize_my_annotation(mine),
-        "editable": is_editable(task, mine),
+        "my_submissions": my_submitted_count(task, user_id),
+        "editable": is_editable(task, mine) and not i_declined(task, user_id),
     }
 
 
@@ -260,6 +276,7 @@ def qa_task_payload(task: Task) -> dict[str, Any]:
         "annotations": [
             {
                 "slot": idx,
+                "id": str(a.id),
                 "user_id": str(a.user_id) if a.user_id else None,
                 "user_name": a.user_name or "",
                 "status": a.status or "submitted",
@@ -302,7 +319,9 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
         .order_by(Task.sequence.asc(), Task.created_at.asc(), Task.id.asc())
         .all()
     )
-    mine_by_task: dict[uuid.UUID, TaskAnnotation] = {}
+    mine_by_task: dict[uuid.UUID, TaskAnnotation] = {}   # my OPEN response per task
+    my_subs: dict[uuid.UUID, int] = {}
+    my_declined: set[uuid.UUID] = set()
     if tasks and uid is not None:
         rows = (
             db.query(TaskAnnotation)
@@ -312,16 +331,22 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
             )
             .all()
         )
-        mine_by_task = {a.task_id: a for a in rows}
+        for a in rows:
+            st = a.status or "draft"
+            if st in ("draft", "returned"):
+                mine_by_task[a.task_id] = a
+            elif st == "submitted":
+                my_subs[a.task_id] = my_subs.get(a.task_id, 0) + 1
+            elif st == "declined":
+                my_declined.add(a.task_id)
 
     required = required_annotators_for(queue)
     items: list[dict[str, Any]] = []
     my_done = 0
     for t in tasks:
         mine = mine_by_task.get(t.id)
-        status = my_status_for(mine)
-        if status == "submitted":
-            my_done += 1
+        status = "declined" if (mine is None and t.id in my_declined) else my_status_for(mine)
+        my_done += my_subs.get(t.id, 0)
         items.append({
             "id": str(t.id),
             "sequence": int(t.sequence or 0),
@@ -331,6 +356,7 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
             "submitted_count": int(t.submitted_count or 0),
             "required_annotators": required,
             "my_status": status,
+            "my_submissions": my_subs.get(t.id, 0),
         })
 
     queue_dict = get_queue_by_id(db, str(queue.id)) or {}
@@ -340,54 +366,60 @@ def list_workspace_tasks(db: Session, queue: Queue, user_id: str) -> dict[str, A
 def next_task_id(
     db: Session, queue_id: uuid.UUID, user_id: str, after_sequence: int | None = None
 ) -> str | None:
-    """Availability-based pick: the task with the FEWEST other people on it.
+    """Availability-based pick under the RESPONSES model.
 
-    Pool = unlocked tasks (not submitted/approved) the user has not submitted or
-    declined, minus the task just left (``after_sequence``) unless it is the only
-    one. A task the user already holds as a draft (paused, or claimed by opening
-    it) is returned first so they resume their own work. Otherwise every task is
-    scored by the number of OTHER annotators with a draft or submission on it and
-    the least-loaded task wins, ties broken at random. Four annotators starting
-    together therefore land on four different tasks whenever four are free.
+    Every task needs ``required_annotators`` responses; the same person may
+    give more than one. Pool = unlocked tasks the user has not declined, whose
+    responses-in-flight (submitted + open drafts by anyone else) are still
+    below the requirement - so a task never collects a 4th response. The
+    user's own open draft is resumed first on Start Working; after a
+    submit/skip/decline tasks the user has never answered come first, then
+    tasks they may answer again; least-loaded wins, ties at random.
     """
     uid = _parse_uuid(user_id)
     tasks = (
-        db.query(Task.id, Task.sequence, Task.status)
+        db.query(Task.id, Task.sequence, Task.status, Task.queue_id)
         .filter(Task.queue_id == queue_id, Task.status.notin_(LOCKED_TASK_STATUSES))
         .all()
     )
     if not tasks:
         return None
-    done_ids: set[uuid.UUID] = set()
-    draft_ids: set[uuid.UUID] = set()
+    queue = db.query(Queue).filter(Queue.id == queue_id).first()
+    required = required_annotators_for(queue)
+    declined: set[uuid.UUID] = set()
+    my_draft: set[uuid.UUID] = set()
+    my_submitted: set[uuid.UUID] = set()
     load: dict[uuid.UUID, int] = {t.id: 0 for t in tasks}
     rows = db.query(TaskAnnotation.task_id, TaskAnnotation.user_id, TaskAnnotation.status).filter(
         TaskAnnotation.task_id.in_(list(load.keys()))
     )
     for task_id, ann_uid, astatus in rows:
-        if uid is not None and ann_uid == uid:
-            if astatus in ("submitted", "declined"):
-                done_ids.add(task_id)
-            elif astatus == "draft":
-                draft_ids.add(task_id)
-        elif astatus in ("draft", "submitted"):
-            load[task_id] = load.get(task_id, 0) + 1
-    candidates = [t for t in tasks if t.id not in done_ids]
-    if not candidates:
-        return None  # nothing new for this user: never re-serve a submitted task
+        astatus = astatus or "draft"
+        mine = uid is not None and ann_uid == uid
+        if mine and astatus == "declined":
+            declined.add(task_id)
+        elif mine and astatus in ("draft", "returned"):
+            my_draft.add(task_id)
+        elif astatus == "submitted":
+            load[task_id] += 1
+            if mine:
+                my_submitted.add(task_id)
+        elif astatus == "draft":
+            load[task_id] += 1
+    candidates = [t for t in tasks if t.id not in declined]
     others = [t for t in candidates if after_sequence is None or (t.sequence or 0) != after_sequence]
     pool = others or candidates
-    resumable = [t for t in pool if t.id in draft_ids]
     if after_sequence is None:
-        # Start Working / resume: the task the user paused comes first.
+        resumable = [t for t in pool if t.id in my_draft]
         if resumable:
             return str(random.choice(resumable).id)
-    else:
-        # Moving on after submit/skip/decline: prefer tasks the user has not touched,
-        # so a skipped task does not come straight back while fresh ones remain.
-        fresh = [t for t in pool if t.id not in draft_ids]
-        if fresh:
-            pool = fresh
+    # Hard cap: only tasks that still need a response (my own open draft counts as mine, not load).
+    pool = [t for t in pool if load[t.id] < required]
+    if not pool:
+        return None
+    fresh = [t for t in pool if t.id not in my_submitted and t.id not in my_draft]
+    if fresh:
+        pool = fresh
     best = min(load[t.id] for t in pool)
     return str(random.choice([t for t in pool if load[t.id] == best]).id)
 
@@ -584,12 +616,13 @@ def submit_annotation(
     sev = clean.get("severity") if isinstance(clean.get("severity"), dict) else {}
     out_row = (
         db.query(TaskOutput)
-        .filter(TaskOutput.task_id == task.id, TaskOutput.user_id == uid)
+        .filter(TaskOutput.annotation_id == ann.id)
         .first()
     )
     if out_row is None:
         out_row = TaskOutput(
             id=uuid.uuid4(),
+            annotation_id=ann.id,
             task_id=task.id,
             user_id=uid,
             user_name=user.get("full_name") or "",

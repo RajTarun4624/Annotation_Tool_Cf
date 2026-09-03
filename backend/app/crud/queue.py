@@ -385,6 +385,8 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
             .all()
         ):
             unlocked_by_queue.setdefault(qid, set()).add(tid)
+        # Responses model: a task the user already answered may be answered again,
+        # so only DECLINED tasks are off-limits for them.
         done_task_ids = {
             tid
             for (tid,) in db.query(TaskAnnotation.task_id)
@@ -392,7 +394,7 @@ def _apply_user_view(db: Session, queues: list[Queue], items: list[dict[str, Any
             .filter(
                 Task.queue_id.in_(prod_ids),
                 TaskAnnotation.user_id == uid,
-                TaskAnnotation.status.in_(("submitted", "declined")),
+                TaskAnnotation.status == "declined",
             )
         }
 
