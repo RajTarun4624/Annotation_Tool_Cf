@@ -416,6 +416,7 @@
 
     /* ---- error painting ---- */
     function paintErrors() {
+      paintRole();
       Object.keys(refs.errEls || {}).forEach((key) => {
         const node = refs.errEls[key];
         const msg = errors[key];
@@ -526,40 +527,31 @@
       return wrap;
     }
 
-    /* ---- role chips (multi-select) ---- */
-    function toggleRole(r) {
-      if (readOnly) return;
-      const has = state.role.includes(r);
-      const next = has ? state.role.filter((x) => x !== r) : state.role.concat([r]);
-      state = normalise(Object.assign({}, state, { role: next }), tax);
-      clearError("role");
-      paintRoleChips();
-      emit();
-    }
-    function buildRoleChips() {
-      const wrap = h('<div role="group" aria-label="Role" style="display:flex;flex-wrap:wrap;gap:8px"></div>');
-      tax.role.forEach((opt) => {
-        const btn = h(
-          '<button type="button" data-role-chip="' + esc(opt.value) + '" data-hover="chiptoggle" style="' + CHIP_BASE + CHIP_OFF + '">' +
-            '<span data-check style="display:none;line-height:0">' + App.icon("AiOutlineCheck", { size: 13 }) + "</span>" +
-            esc(opt.label) + "</button>",
-        );
-        btn.addEventListener("click", () => toggleRole(opt.value));
-        wrap.appendChild(btn);
+    /* ---- role: multi-select dropdown ---- */
+    function buildRoleSelect() {
+      const ctl = App.multiSelect({
+        options: tax.role,
+        value: state.role,
+        placeholder: "Select roles",
+        onChange: (list) => {
+          if (readOnly) { ctl.setValue(state.role); return; }
+          state = normalise(Object.assign({}, state, { role: list }), tax);
+          ctl.setValue(state.role);
+          clearError("role");
+          emit();
+        },
       });
-      refs.roleChips = wrap;
-      return wrap;
+      ctl.trigger.setAttribute("aria-label", FIELD_LABELS.role);
+      refs.roleCtl = ctl;
+      return ctl;
     }
-    function paintRoleChips() {
-      if (!refs.roleChips) return;
-      const selected = new Set(state.role);
-      App.qsa("[data-role-chip]", refs.roleChips).forEach((btn) => {
-        const on = selected.has(btn.dataset.roleChip);
-        btn.setAttribute("style", CHIP_BASE + (on ? "border:1px solid #2563eb;background:#eff6ff;color:#1d4ed8;" : CHIP_OFF) + (readOnly ? "cursor:default;" : "cursor:pointer;"));
-        btn.setAttribute("aria-pressed", on ? "true" : "false");
-        const check = btn.querySelector("[data-check]");
-        if (check) check.style.display = on ? "inline-flex" : "none";
-      });
+    function paintRole() {
+      if (!refs.roleCtl) return;
+      refs.roleCtl.setValue(state.role);
+      refs.roleCtl.setDisabled(readOnly);
+      const bad = !!errors.role;
+      refs.roleCtl.dataset.errBorder = bad ? "1" : "";
+      refs.roleCtl.trigger.style.borderColor = bad ? "#f87171" : "#cbd5e1";
     }
 
     /* ---- subcategories: one per attack type (radio per group) ---- */
@@ -664,7 +656,7 @@
     function applyReadOnly() {
       SINGLE_FIELDS.concat(["verified"]).forEach((k) => { const sel = refs.controls[k]; if (sel) styleSelect(sel, readOnly); });
       paintChips();
-      paintRoleChips();
+      paintRole();
       paintSubcats();
       paintSeverity();
       const ta = refs.controls.source_description;
@@ -742,10 +734,10 @@
       const ctx = section("Context & Verification");
       const g2 = grid2();
       g2.appendChild(singleField("domain", "Select domain"));
+      g2.appendChild(fieldWrap("role", esc("Role") + '<span style="font-weight:500;color:#64748b">multi-select</span>', buildRoleSelect()));
       g2.appendChild(singleField("language"));
       g2.appendChild(singleField("source"));
       ctx.appendChild(g2);
-      ctx.appendChild(fieldWrap("role", esc("Role") + '<span style="font-weight:500;color:#64748b">multi-select · every role present in the prompt</span>', buildRoleChips()));
       const g3 = grid2();
       g3.appendChild(
         fieldWrap(

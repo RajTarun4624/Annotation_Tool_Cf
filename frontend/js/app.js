@@ -1220,6 +1220,119 @@
   }
 
   /** checkbox({checked, indeterminate, label, onChange, disabled}) → <label> with .input */
+  /**
+   * multiSelect({options, value, placeholder, onChange, width, height}) → wrapper element.
+   * A dropdown that lets the user tick several options. The closed control looks like
+   * select(); the open panel lists the options with checkboxes. Handle methods on the
+   * returned element: getValue() → string[], setValue(list), setDisabled(bool), open(), close().
+   */
+  function multiSelect(cfg) {
+    const c = cfg || {};
+    const height = c.height || 36;
+    const options = (c.options || []).map((o) => ({ value: o.value == null ? "" : String(o.value), label: o.label == null ? String(o.value) : String(o.label) }));
+    const labelOf = {};
+    options.forEach((o) => { labelOf[o.value] = o.label; });
+    let value = [];
+    let disabled = false;
+    let openState = false;
+
+    const wrap = el('<div data-multiselect style="position:relative;' + (c.width ? "width:" + (typeof c.width === "number" ? c.width + "px" : c.width) + ";" : "width:100%;") + 'min-width:0"></div>');
+    const trigger = el(
+      '<button type="button" data-hover="fieldfocus" aria-haspopup="listbox" aria-expanded="false" style="' +
+        "display:flex;align-items:center;box-sizing:border-box;width:100%;height:" + height + "px;padding:0 30px 0 11px;border-radius:8px;border:1px solid #cbd5e1;" +
+        "background:" + CHEVRON_URI + " no-repeat right 10px center / 12px 12px, #fff;color:#0f172a;font-size:" + (height < 34 ? 13 : 14) + "px;" +
+        'font-family:inherit;text-align:left;cursor:pointer;transition:border-color .15s, box-shadow .15s;line-height:normal">' +
+        '<span data-text style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>' +
+        '<span data-count style="display:none;flex-shrink:0;margin-left:8px;padding:1px 7px;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:11px;font-weight:700"></span>' +
+        "</button>",
+    );
+    const panel = el(
+      '<div role="listbox" aria-multiselectable="true" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:60;box-sizing:border-box;max-height:260px;overflow-y:auto;' +
+        'padding:6px;border-radius:10px;border:1px solid #cbd5e1;background:#fff;box-shadow:0 12px 32px rgba(15,23,42,0.14)"></div>',
+    );
+    const textEl = trigger.querySelector("[data-text]");
+    const countEl = trigger.querySelector("[data-count]");
+    const rows = {};
+    options.forEach((o) => {
+      const row = el(
+        '<label data-hover="menuitem" style="display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;cursor:pointer;font-size:13.5px;color:#0f172a;user-select:none">' +
+          '<input type="checkbox" style="width:16px;height:16px;accent-color:#1d4ed8;margin:0;flex-shrink:0;cursor:inherit">' +
+          "<span>" + escapeHtml(o.label) + "</span></label>",
+      );
+      const input = row.querySelector("input");
+      input.value = o.value;
+      input.addEventListener("change", () => {
+        if (disabled) { input.checked = value.includes(o.value); return; }
+        const next = input.checked ? value.concat([o.value]) : value.filter((v) => v !== o.value);
+        setValue(next);
+        if (typeof c.onChange === "function") c.onChange(value.slice());
+      });
+      rows[o.value] = input;
+      panel.appendChild(row);
+    });
+    if (!options.length) panel.appendChild(el('<div style="padding:8px;font-size:13px;color:#94a3b8">No options</div>'));
+
+    function paint() {
+      const labels = value.map((v) => labelOf[v] == null ? v : labelOf[v]);
+      if (labels.length) {
+        textEl.textContent = labels.join(", ");
+        textEl.style.color = "#0f172a";
+        textEl.title = labels.join(", ");
+      } else {
+        textEl.textContent = c.placeholder || "Select…";
+        textEl.style.color = "#94a3b8";
+        textEl.title = "";
+      }
+      countEl.textContent = String(labels.length);
+      countEl.style.display = labels.length > 1 ? "inline-flex" : "none";
+      options.forEach((o) => { rows[o.value].checked = value.includes(o.value); });
+    }
+    function setValue(list) {
+      const seen = new Set();
+      value = (Array.isArray(list) ? list : []).map((v) => String(v)).filter((v) => labelOf[v] != null && !seen.has(v) && (seen.add(v), true));
+      paint();
+    }
+    function setDisabled(flag) {
+      disabled = !!flag;
+      trigger.disabled = disabled;
+      trigger.style.cursor = disabled ? "not-allowed" : "pointer";
+      trigger.style.background = CHEVRON_URI + " no-repeat right 10px center / 12px 12px, " + (disabled ? "#f8fafc" : "#fff");
+      trigger.style.color = disabled ? "#64748b" : "#0f172a";
+      Object.keys(rows).forEach((k) => { rows[k].disabled = disabled; });
+      if (disabled) close();
+    }
+    function onDocClick(e) { if (!wrap.contains(e.target)) close(); }
+    function onKey(e) { if (e.key === "Escape") { close(); trigger.focus(); } }
+    function open() {
+      if (disabled || openState) return;
+      openState = true;
+      panel.style.display = "block";
+      trigger.setAttribute("aria-expanded", "true");
+      trigger.style.borderColor = "#2563eb";
+      setTimeout(() => { document.addEventListener("mousedown", onDocClick); document.addEventListener("keydown", onKey); }, 0);
+    }
+    function close() {
+      if (!openState) return;
+      openState = false;
+      panel.style.display = "none";
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.style.borderColor = wrap.dataset.errBorder === "1" ? "#f87171" : "#cbd5e1";
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    }
+    trigger.addEventListener("click", () => { if (openState) close(); else open(); });
+    wrap.appendChild(trigger);
+    wrap.appendChild(panel);
+    wrap.trigger = trigger;
+    wrap.getValue = () => value.slice();
+    wrap.setValue = setValue;
+    wrap.setDisabled = setDisabled;
+    wrap.open = open;
+    wrap.close = close;
+    setValue(c.value);
+    return wrap;
+  }
+
   function checkbox(cfg) {
     const c = cfg || {};
     const wrap = el(
@@ -1725,6 +1838,7 @@
     avatarInitial,
     searchBox,
     select,
+    multiSelect,
     switchEl,
     checkbox,
     table,
