@@ -27,6 +27,17 @@ engine = create_engine(
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,
+    pool_recycle=1800,    # never keep a connection older than 30 min (LB/NAT idle cuts)
+    connect_args={
+        # Guard rails set per connection: a runaway statement is cancelled and a
+        # row-lock wait cannot hang a worker thread indefinitely.
+        "options": (
+            f"-c statement_timeout={int(settings.DB_STATEMENT_TIMEOUT_MS)} "
+            f"-c lock_timeout={int(settings.DB_LOCK_TIMEOUT_MS)} "
+            "-c application_name=promptattack-api"
+        ),
+        "connect_timeout": 10,
+    },
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

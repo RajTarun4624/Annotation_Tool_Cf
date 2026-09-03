@@ -395,6 +395,15 @@
       );
     }
 
+    // Server busy (admission control shed the request): wait for Retry-After
+    // and replay once. Autosaves and heartbeats ride through a short spike
+    // without surfacing an error to the annotator.
+    if (res.status === 503 && !o._retried503) {
+      const wait = Math.min(10, Math.max(1, Number(res.headers.get("retry-after")) || 2)) * 1000;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      return api(path, Object.assign({}, o, { _retried503: true }));
+    }
+
     // Expired access token → refresh once and replay with the new bearer.
     if (res.status === 401 && auth && token) {
       if (!o._retry) {

@@ -119,6 +119,58 @@ Tunables (env): `CLAIM_LEASE_SECONDS`, `REFRESH_GRACE_SECONDS`, `USER_CACHE_SECO
 `DASHBOARD_CACHE_SECONDS`, `THREADPOOL_TOKENS`, `WEB_CONCURRENCY`, `DB_POOL_SIZE`,
 `DB_MAX_OVERFLOW`, `GUNICORN_TIMEOUT`.
 
+## Operations runbook
+
+**Before go-live.** Copy `.env.example` to `.env` beside `docker-compose.yml`
+and set `DB_PASS`, `SECRET_KEY`, `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD`
+(used only to create the account; rotate it in the app afterwards). Serve
+over HTTPS and set `COOKIE_SECURE=true`. Re-run the load-test harness on the
+production host (`backend/scripts/loadtest/README.md`).
+
+**Health and metrics.**
+- `GET /health` - liveness, answered from the event loop even when every
+  worker thread is busy (use it for container health checks).
+- `GET /health/details` - one worker's snapshot: request counters (in-flight,
+  5xx, slow), DB pool occupancy (`checkedout` vs `size + max_overflow`),
+  admission queue (`waiting`, `rejected_503`), thread-pool tokens, uptime,
+  and a live DB ping (503 `degraded` when the ping fails). Poll it from
+  monitoring; each call may land on a different worker (`pid`).
+- Every response carries `X-Request-ID` (echoed if the client sent one) and
+  `X-Response-Time`.
+
+**Logs to watch** (stdout of the backend container, `docker compose logs -f backend`).
+- `SLOW request id=... GET /api/v1/... -> 200 in 1234 ms` - slower than
+  `SLOW_REQUEST_MS` (1000). Occasional on exports/imports is fine; a steady
+  stream means the workers are saturated.
+- `SLOW query 450 ms: SELECT ...` - slower than `SLOW_QUERY_MS` (300);
+  Postgres also logs statements over 500 ms (`log_min_duration_statement`).
+- `ERROR request ...` / `QueuePool limit ... reached` - the DB pool is
+  exhausted. Should not happen with admission control; if it does, lower
+  `REQUEST_CONCURRENCY` or raise `DB_POOL_SIZE`/`DB_MAX_OVERFLOW`.
+- 503 responses with `Retry-After` - admission control shed load. The web
+  app retries once automatically; a sustained rate means scale up.
+
+**Scaling.** Add API workers with `WEB_CONCURRENCY` (rule: workers x
+(`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) < Postgres `max_connections`, compose:
+4 x 20 < 200). Beyond one host, run more backend replicas behind nginx with a
+shared `uploads` volume; every replica boots safely (advisory-locked startup).
+Give Postgres its own host or at least its own cores; adjust `shared_buffers`
+(25 % of RAM) and `effective_cache_size` (60 %) in the compose `command`.
+
+**Stuck work.** A task nobody can pick up is usually a live claim: leases
+expire after `CLAIM_LEASE_SECONDS` (600) without a heartbeat. To free one
+immediately, an admin (queues permission) can call
+`GET /api/v1/workspace/tasks/{id}/claims` and
+`POST /api/v1/workspace/tasks/{id}/claims/release` with `{"user_id": ...}`.
+QA leases are released the same way through `/workspace/qa/tasks/{id}/release`
+(admins may release another reviewer's hold).
+
+**Guard rails.** Every DB connection runs with `statement_timeout` 60 s and
+`lock_timeout` 10 s (`DB_STATEMENT_TIMEOUT_MS`, `DB_LOCK_TIMEOUT_MS`), so a
+runaway statement is cancelled and a lock wait cannot hang a worker. Sessions
+older than a day and audit rows older than 90 days are trimmed
+opportunistically. Container logs rotate at 5 x 50 MB.
+
 ## Tests
 
 ```bat

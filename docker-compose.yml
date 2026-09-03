@@ -23,6 +23,13 @@ services:
       POSTGRES_PASSWORD: "${DB_PASS:-1234}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
     ports:
       - "5432:5432"
     healthcheck:
@@ -47,6 +54,9 @@ services:
       resources:
         limits:
           memory: 2g
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
     environment:
       APP_NAME: Prompt Attack Annotation Platform API
       DB_HOST: db
@@ -88,6 +98,13 @@ services:
       dockerfile: Dockerfile
     container_name: promptattack_frontend
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
     ports:
       - "80:80"
     depends_on:

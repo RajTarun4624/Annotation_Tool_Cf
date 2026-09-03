@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     # holds a connection (that wait is what exhausts the pool under a burst).
     THREADPOOL_TOKENS: int = 0
 
+    # Observability: requests / statements slower than these are logged as
+    # warnings (and counted on /health/details).
+    SLOW_REQUEST_MS: int = 1000
+    SLOW_QUERY_MS: int = 300
+    # Server-side guard rails on every pooled connection: a runaway statement
+    # is cancelled, and a row-lock wait never hangs a worker thread.
+    DB_STATEMENT_TIMEOUT_MS: int = 60000
+    DB_LOCK_TIMEOUT_MS: int = 10000
+
     CORS_ORIGINS: str = "http://localhost:8005,http://127.0.0.1:8005,http://localhost:3000,http://127.0.0.1:3000"
     CORS_ORIGIN_REGEX: str = r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$"
 

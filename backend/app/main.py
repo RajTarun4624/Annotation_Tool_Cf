@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import anyio
@@ -11,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.database import ensure_database, ensure_indexes, startup_lock
+from app.core.database import engine, ensure_database, ensure_indexes, startup_lock
 from app.core.errors import ConflictError
+from app.core.observability import RequestTiming, install_slow_query_log, snapshot
 from app.services.bootstrap import seed_default_admin
 
 logger = logging.getLogger("uvicorn.error")
@@ -36,6 +38,8 @@ class AdmissionControl:
     holding nothing; the queue is bounded and times out with a fast 503.
     """
 
+    instances: list["AdmissionControl"] = []  # for /health/details
+
     def __init__(self, app, limit: int, max_queue: int, queue_timeout: float) -> None:
         self.app = app
         self.limit = limit
@@ -44,6 +48,17 @@ class AdmissionControl:
         self._sem: asyncio.Semaphore | None = None
         self.waiting = 0
         self.rejected = 0
+        self.admitted = 0
+        AdmissionControl.instances.append(self)
+
+    def stats(self) -> dict:
+        sem = self._sem
+        in_flight = (self.limit - sem._value) if sem is not None else 0  # noqa: SLF001
+        return {
+            "limit": self.limit, "in_flight": max(0, in_flight), "waiting": self.waiting,
+            "admitted": self.admitted, "rejected_503": self.rejected,
+            "queue_max": self.max_queue, "queue_timeout_s": self.queue_timeout,
+        }
 
     def _semaphore(self) -> asyncio.Semaphore:
         if self._sem is None:
@@ -75,6 +90,7 @@ class AdmissionControl:
                 return await self._busy(send)
         finally:
             self.waiting -= 1
+        self.admitted += 1
         try:
             await self.app(scope, receive, send)
         finally:
@@ -107,7 +123,15 @@ async def lifespan(app: FastAPI):
             "DEFAULT_ADMIN_PASSWORD is the well-known default — change it "
             "(or set the env var) in any shared deployment."
         )
+    logger.info(
+        "worker pid=%s ready: admission limit=%s, thread tokens=%s, db pool=%s+%s, "
+        "lease=%ss, slow request/query thresholds=%s/%s ms",
+        os.getpid(), request_concurrency_limit(), int(tokens), settings.DB_POOL_SIZE,
+        settings.DB_MAX_OVERFLOW, settings.CLAIM_LEASE_SECONDS, settings.SLOW_REQUEST_MS,
+        settings.SLOW_QUERY_MS,
+    )
     yield
+    engine.dispose()
 
 
 app = FastAPI(
@@ -125,13 +149,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Outermost: bound in-flight API requests per worker (see AdmissionControl).
+# Bound in-flight API requests per worker (see AdmissionControl).
 app.add_middleware(
     AdmissionControl,
     limit=request_concurrency_limit(),
     max_queue=settings.REQUEST_QUEUE_MAX,
     queue_timeout=settings.REQUEST_QUEUE_TIMEOUT,
 )
+# Outermost: request id + response-time header, slow/5xx log, counters. It
+# wraps admission control so the measured time includes any queueing.
+app.add_middleware(RequestTiming)
+install_slow_query_log(engine)
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
@@ -147,6 +175,34 @@ async def _conflict_handler(request: Request, exc: ConflictError) -> JSONRespons
 async def health_check() -> dict[str, str]:
     # async: answers from the event loop even when every worker thread is busy.
     return {"status": "ok"}
+
+
+def _db_ping() -> float:
+    started = time.perf_counter()
+    with engine.connect() as conn:
+        conn.exec_driver_sql("SELECT 1").scalar()
+    return round((time.perf_counter() - started) * 1000, 1)
+
+
+@app.get("/health/details", tags=["health"])
+async def health_details() -> JSONResponse:
+    """Operational snapshot of THIS worker process: request counters, DB pool
+    occupancy, admission-control queue, thread pool, and a live DB ping.
+    Poll it from monitoring; `status` is "degraded" when the DB ping fails."""
+    admission = AdmissionControl.instances[0].stats() if AdmissionControl.instances else None
+    tokens = anyio.to_thread.current_default_thread_limiter().total_tokens
+    body = snapshot(engine, admission, int(tokens))
+    body["version"] = app.version
+    try:
+        body["db_ping_ms"] = await asyncio.wait_for(anyio.to_thread.run_sync(_db_ping), timeout=5)
+        body["status"] = "ok"
+        code = 200
+    except Exception as exc:  # noqa: BLE001
+        body["db_ping_ms"] = None
+        body["db_error"] = str(exc)[:200]
+        body["status"] = "degraded"
+        code = 503
+    return JSONResponse(status_code=code, content=body)
 
 
 _IMMUTABLE_EXT = (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2")
