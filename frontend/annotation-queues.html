@@ -16,7 +16,7 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903o"></script>
+<script src="js/app.js?v=20260903p"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -41,8 +41,22 @@
   const PRIORITY_TONE = { low: "emerald", medium: "blue", high: "amber", critical: "rose" };
 
   /* ── State ─────────────────────────────────────────────────────────────── */
+  // The active tab survives a refresh: URL ?tab=qa first, then the last choice kept in localStorage.
+  const TAB_KEY = "pa:annotation-queues:tab";
+  function initialTab() {
+    const fromUrl = (new URLSearchParams(location.search).get("tab") || "").toLowerCase();
+    if (fromUrl === "production" || fromUrl === "qa") return fromUrl;
+    try { const saved = localStorage.getItem(TAB_KEY); if (saved === "production" || saved === "qa") return saved; } catch (e) { /* ignore */ }
+    return "production";
+  }
+  function rememberTab(key) {
+    try { localStorage.setItem(TAB_KEY, key); } catch (e) { /* ignore */ }
+    const url = new URL(location.href);
+    url.searchParams.set("tab", key);
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
   const state = {
-    activeTab: "production",
+    activeTab: initialTab(),
     queues: [],
     total: 0,
     page: 1,
@@ -110,6 +124,7 @@
     activeStyle: "tint",
     onChange: (key) => {
       state.activeTab = key;
+      rememberTab(key);
       state.page = 1;
       search.input.placeholder = "Search " + key + " queues...";
       loadData();
