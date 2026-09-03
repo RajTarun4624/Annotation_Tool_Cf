@@ -17,8 +17,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903m"></script>
-<script src="js/annotation-form.js?v=20260903m"></script>
+<script src="js/app.js?v=20260903n"></script>
+<script src="js/annotation-form.js?v=20260903n"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -709,6 +709,26 @@
     await saveDraft({ silent: false });
   }
 
+  /* ── Submit loader: spinner + label swap on the button and a page overlay while the request runs ── */
+  function setSubmitting(on) {
+    App.setLoading(els.submit, on);
+    const label = els.submit.querySelector("span:last-child");
+    if (label) label.textContent = on ? "Submitting…" : "Submit final";
+    let ov = document.querySelector('[data-role="submit-overlay"]');
+    if (on) {
+      if (!ov) {
+        ov = App.el(
+          '<div data-role="submit-overlay" role="status" aria-live="polite" style="position:fixed;inset:0;z-index:80;background:rgba(255,255,255,0.55);display:flex;align-items:center;justify-content:center">' +
+            '<div style="display:flex;align-items:center;gap:12px;padding:14px 20px;border-radius:12px;border:1px solid #cbd5e1;background:#fff;box-shadow:0 12px 32px rgba(15,23,42,0.14);font-size:14px;font-weight:600;color:#0f172a">' +
+            App.spinner(22) + "<span>Submitting final annotation…</span></div></div>",
+        );
+        document.body.appendChild(ov);
+      }
+    } else if (ov) {
+      ov.remove();
+    }
+  }
+
   /* ── Submit final ────────────────────────────────────────────────────────── */
   async function submitFinal() {
     if (!state.currentId) { App.toast.warning("No task is currently open."); return; }
@@ -725,7 +745,7 @@
     autosave.cancel();
     const taskId = state.currentId;
     const seq = state.loadSeq;
-    App.setLoading(els.submit, true);
+    setSubmitting(true);
     try {
       await awaitPendingSave();
       autosave.cancel();
@@ -752,7 +772,7 @@
         App.toast.error(err.message || "Unable to finalise the task.");
       }
     } finally {
-      App.setLoading(els.submit, false);
+      setSubmitting(false);
       paintTopBar();
     }
   }
