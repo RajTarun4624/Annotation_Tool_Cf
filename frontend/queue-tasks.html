@@ -168,16 +168,15 @@
 
     // Production: progress = tasks submitted to QA (annotation round complete); QA: tasks reviewed.
     const progressed = qa ? num(summary.completed_tasks, 0) : num(summary.submitted_to_qa, 0);
-    const progressLabel = "submitted";
+    const progressLabel = qa ? "reviewed" : "submitted";
+    // Numbers only (no bar): done / total, percentage underneath.
     const progressCard =
       '<div style="border-radius:8px;border:1px solid #e2e8f0;background:#fff;padding:6px 12px;display:flex;align-items:center;gap:10px;box-sizing:border-box">' +
       '<div style="min-width:0">' +
       '<span style="' + LABEL + '">Progress</span>' +
-      '<div style="display:flex;align-items:center;gap:8px;margin-top:3px">' +
-      '<span style="display:block;width:96px;height:4px;border-radius:100px;background:#e2e8f0;overflow:hidden;flex-shrink:0">' +
-      '<span style="display:block;height:100%;border-radius:100px;background:' + (qa ? "#7c3aed" : "#1d4ed8") + ';width:' + pct + '%;transition:width .3s ease"></span></span>' +
-      '<span style="font-size:12px;font-family:' + MONO + ';font-weight:700;color:#1e293b;white-space:nowrap">' + pct + "%</span></div>" +
-      '<span style="display:block;font-size:10px;color:#64748b;margin-top:2px;white-space:nowrap">' + progressed + " / " + num(summary.total_tasks, 0) + " " + progressLabel + "</span>" +
+      '<span style="display:block;margin-top:3px;font-size:13px;font-family:' + MONO + ';font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums;white-space:nowrap">' +
+      progressed + " / " + num(summary.total_tasks, 0) + " " + progressLabel + "</span>" +
+      '<span style="display:block;font-size:10px;color:#64748b;margin-top:2px;white-space:nowrap">' + pct + "% done</span>" +
       "</div></div>";
 
     headerBox.innerHTML = "";

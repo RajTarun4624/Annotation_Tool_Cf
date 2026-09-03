@@ -320,21 +320,18 @@
     );
   }
 
-  // Small progress circle (no percentage) with the done / total count beside it.
+  // Done / total count only (no ring or bar).
   // Production: done = tasks whose annotation round is complete (submitted to QA or approved).
   // QA: done = tasks reviewed (approved).
   function renderProgress(r) {
     const isQa = r.annotation_type === "qa";
     const total = num(r.total_tasks);
     const done = isQa ? num(r.approved_tasks) : num(r.submitted_tasks) + num(r.approved_tasks);
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     return (
-      '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
-      App.progressRing(pct, isQa ? "#7c3aed" : "#1d4ed8", 22, false) +
       '<div style="min-width:0;line-height:1.3">' +
       '<span style="display:block;font-size:13px;font-weight:700;color:#0f172a;font-family:' + App.tokens.MONO + ';font-variant-numeric:tabular-nums;white-space:nowrap">' + done + " / " + total + "</span>" +
-      '<span style="display:block;font-size:11px;color:#64748b">submitted</span>' +
-      "</div></div>"
+      '<span style="display:block;font-size:11px;color:#64748b">' + (isQa ? "reviewed" : "submitted") + "</span>" +
+      "</div>"
     );
   }
 
