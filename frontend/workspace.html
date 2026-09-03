@@ -15,8 +15,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/app.js?v=20260903j"></script>
-<script src="js/annotation-form.js?v=20260903j"></script>
+<script src="js/app.js?v=20260903k"></script>
+<script src="js/annotation-form.js?v=20260903k"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -292,7 +292,9 @@
         (task.data_length_bucket ? '<span style="' + BADGE_BASE + 'background:#faf5ff;border:1px solid #e9d5ff;color:#7e22ce;">' + esc(task.data_length_bucket) + "</span>" : "") +
         '<span style="' + BADGE_BASE + 'background:#ecfdf5;border:1px solid #a7f3d0;color:#047857;">' + App.icon("AiOutlineTag", { size: 12, color: "#059669" }) + esc(labelOf("source", task.source || "real_user")) + "</span>" +
         // Icon-only copy button, pushed to the right edge of the chip row; copies the raw prompt text.
-        '<button type="button" data-role="copy-text" title="Copy text" aria-label="Copy text" style="' + COPY_BTN + '">' + App.icon("AiOutlineCopy", { size: 16, color: "#334155" }) + "</button>" +
+        // Minimal save/status pill, then the copy icon, both pushed to the right edge.
+        '<span data-role="status-pill" style="margin-left:auto"></span>' +
+        '<button type="button" data-role="copy-text" title="Copy text" aria-label="Copy text" style="' + COPY_BTN + 'margin-left:0">' + App.icon("AiOutlineCopy", { size: 16, color: "#334155" }) + "</button>" +
         "</div></div>",
     );
     body.appendChild(header);
@@ -329,29 +331,32 @@
     );
   }
   function paintBanner() {
+    // The former right-side banner is now a small pill beside the copy icon in the task header.
+    els.banner.innerHTML = "";
+    const pill = R("status-pill", els.centreBody);
     const cur = state.current;
-    if (!cur) { els.banner.innerHTML = ""; return; }
+    if (!pill) return;
+    if (!cur) { pill.innerHTML = ""; return; }
     const mine = cur.my_annotation;
     const task = cur.task;
-    let html;
+    let tone = "slate", icon = "AiOutlineInfoCircle", text = "In progress", title = "Drafts are saved automatically as you work.";
     if (mine && mine.status === "submitted") {
-      html = bannerHtml("emerald", "Submitted on " + App.fmt.dateTime(mine.submitted_at), "This annotation is submitted and locked for QA review.");
+      tone = "emerald"; icon = "AiOutlineCheckCircle"; text = "Submitted " + App.fmt.time(mine.submitted_at); title = "Submitted on " + App.fmt.dateTime(mine.submitted_at) + " · locked for QA review";
     } else if (mine && mine.status === "declined") {
-      html = bannerHtml("rose", "Task declined", "You marked this task as declined.");
+      tone = "rose"; icon = "AiOutlineCloseCircle"; text = "Declined"; title = "You marked this task as declined.";
     } else if (!cur.editable) {
-      html = bannerHtml("purple", task.status === "approved" ? "Task finalised by QA" : "Task in review", "This task is currently read-only.");
+      tone = "purple"; icon = "AiOutlineLock"; text = task.status === "approved" ? "Finalised by QA" : "In review"; title = "This task is read-only.";
     } else if (mine && mine.status === "returned") {
-      html = bannerHtml("amber", "Returned by QA — editable", "Update the annotation below and submit it again." + (mine.updated_at ? " Last change " + App.fmt.dateTime(mine.updated_at) + "." : ""));
-    } else if (mine && mine.status === "draft") {
-      html = state.dirty
-        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save.")
-        : bannerHtml("blue", "Draft saved at " + App.fmt.time(mine.updated_at), "Your progress is stored. Submit when the annotation is complete.");
-    } else {
-      html = state.dirty
-        ? bannerHtml("amber", "Unsaved changes", "Autosaving in a moment — or press Save.")
-        : bannerHtml("slate", "In progress", "Fill in the form; drafts are saved automatically as you work.");
+      tone = "amber"; icon = "AiOutlineRollback"; text = "Returned by QA"; title = "Update the annotation and submit it again.";
+    } else if (state.dirty) {
+      tone = "amber"; icon = "AiOutlineSave"; text = "Unsaved changes"; title = "Autosaving in a moment — or press Save.";
+    } else if (mine && mine.status === "draft" && mine.updated_at) {
+      tone = "blue"; icon = "AiOutlineSave"; text = "Draft saved " + App.fmt.time(mine.updated_at); title = "Saved " + App.fmt.dateTime(mine.updated_at) + " · submit when complete";
     }
-    els.banner.innerHTML = html;
+    const t = App.TONES[tone] || App.TONES.slate;
+    pill.innerHTML =
+      '<span title="' + esc(title) + '" style="' + BADGE_BASE + 'border:1px solid ' + t.border + ';background:' + t.bg + ';color:' + t.text + '">' +
+      App.icon(icon, { size: 12 }) + esc(text) + "</span>";
   }
   function showSubmitErrors(list) {
     if (!list || !list.length) { els.submitErrors.style.display = "none"; els.submitErrors.innerHTML = ""; return; }
