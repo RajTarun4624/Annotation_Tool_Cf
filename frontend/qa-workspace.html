@@ -113,7 +113,7 @@
         '<button type="button" data-role="stop-resume" data-hover="btn-default" style="' + BTN_OUTLINE + '">Stop and resume later</button>' +
         '<span style="color:#cbd5e1;font-weight:300;margin:0 2px">|</span>' +
         '<button type="button" data-role="save" data-hover="btn-default" data-tip="Save progress" style="' + BTN_SAVE + '"><span>Save</span></button>' +
-        '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '"><span>Submit final</span></button>' +
+        '<button type="button" data-role="submit" data-hover="btn-primary" style="' + BTN_PRIMARY + '"><span>Submit</span></button>' +
       "</div>" +
     "</header>",
   );
@@ -429,10 +429,10 @@
         html = bannerHtml("amber", "Editing " + who + "'s response", "Unsaved changes. Autosave runs shortly, or press Save. Your edits replace this annotator's answers.");
       } else if (d.qa_draft && d.qa_draft.annotation_id) {
         html = bannerHtml("blue", "Resumed: editing " + who + "'s response",
-          "Picked up where you left off" + (d.qa_draft.updated_at ? " (" + fmt.dateTime(d.qa_draft.updated_at) + ")" : "") + ". Pick another annotator above to edit theirs, then Submit final.");
+          "Picked up where you left off" + (d.qa_draft.updated_at ? " (" + fmt.dateTime(d.qa_draft.updated_at) + ")" : "") + ". Pick another annotator above to edit theirs, then Submit.");
       } else {
         html = bannerHtml("blue", "Editing " + who + "'s response",
-          "Changes you make are saved into this annotator's response. Pick another annotator above to edit theirs, then Submit final.");
+          "Changes you make are saved into this annotator's response. Pick another annotator above to edit theirs, then Submit.");
       }
     }
     els.banner.innerHTML = html;
@@ -617,7 +617,7 @@
   function setSubmitting(on) {
     App.setLoading(els.submit, on);
     const label = els.submit.querySelector("span:last-child");
-    if (label) label.textContent = on ? "Submitting…" : "Submit final";
+    if (label) label.textContent = on ? "Submitting…" : "Submit";
     let ov = document.querySelector('[data-role="submit-overlay"]');
     if (on) {
       if (!ov) {
@@ -642,10 +642,10 @@
     if (errors && errors.length) return;
     const cur = currentCandidate();
     const ok = await App.confirm({
-      title: "Submit final?",
+      title: "Submit?",
       content: (cur ? "Your edits are saved into " + cur.name + "'s response. " : "") +
         "The final record is built from all annotator responses and the task is marked approved.",
-      okText: "Submit final",
+      okText: "Submit",
     });
     if (!ok) return;
     autosave.cancel();
