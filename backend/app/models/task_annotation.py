@@ -54,6 +54,12 @@ class TaskAnnotation(Base):
     # last_seen_at is older than CLAIM_LEASE_SECONDS no longer counts as
     # "in flight", so an abandoned browser tab never hides a task from others.
     last_seen_at = Column(DateTime, nullable=True)
+    # QA edits this response in place. The first edit keeps the annotator's
+    # original answers here; the qa_edited_* columns say who changed it last.
+    original_data = Column(JSONB, nullable=True)
+    qa_edited_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    qa_edited_by_name = Column(String, nullable=True)
+    qa_edited_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 

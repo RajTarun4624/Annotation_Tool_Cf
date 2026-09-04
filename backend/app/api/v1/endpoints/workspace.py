@@ -48,11 +48,20 @@ class DeclineRequest(BaseModel):
 
 class PreviewRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
+    annotation_id: str | None = None
 
 
 class FinalizeRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     qa_notes: str = ""
+    # The annotator response the reviewer was editing; its data is `data`.
+    annotation_id: str | None = None
+
+
+class ResponseEditRequest(BaseModel):
+    data: dict[str, Any] = Field(default_factory=dict)
+    qa_notes: str = ""
+    elapsed_seconds: int = Field(default=0, ge=0)
 
 
 class ReturnRequest(BaseModel):
@@ -63,6 +72,7 @@ class QaDraftRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     qa_notes: str = ""
     elapsed_seconds: int = Field(default=0, ge=0)
+    annotation_id: str | None = None
 
 
 class ReleaseClaimRequest(BaseModel):
@@ -394,7 +404,38 @@ def preview_qa_task(
 ) -> dict[str, Any]:
     task = _load_task_or_404(db, task_id)
     _require_qa_task_access(db, task, current_user)
-    return {"record": crud.preview_record(task, payload.data)}
+    return {"record": crud.preview_record(task, payload.data, payload.annotation_id)}
+
+
+@router.put("/qa/tasks/{task_id}/annotations/{annotation_id}")
+@router.post("/qa/tasks/{task_id}/annotations/{annotation_id}")
+def edit_qa_response(
+    task_id: str,
+    annotation_id: str,
+    payload: ResponseEditRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """QA edits ONE annotator's response in place (autosave / Save). The
+    annotator's original answers are kept on the first edit."""
+    task = _load_task_or_404(db, task_id)
+    _require_qa_task_access(db, task, current_user)
+    if task.status != "submitted":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only tasks awaiting review can be edited.",
+        )
+    ann = crud.edit_qa_response(db, task, annotation_id, current_user, payload.data, payload.qa_notes, payload.elapsed_seconds)
+    return {
+        "task_id": str(task.id),
+        "annotation_id": str(ann.id),
+        "status": task.status,
+        "data": ann.data if isinstance(ann.data, dict) else {},
+        "edited": ann.qa_edited_at is not None,
+        "qa_edited_by_name": ann.qa_edited_by_name,
+        "qa_edited_at": ann.qa_edited_at,
+        "editable": task.status == "submitted",
+    }
 
 
 @router.post("/qa/tasks/{task_id}/finalize")
@@ -411,7 +452,7 @@ def finalize_qa_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only tasks awaiting review can be finalised.",
         )
-    errors = crud.finalize_task(db, task, current_user, payload.data, payload.qa_notes)
+    errors = crud.finalize_task(db, task, current_user, payload.data, payload.qa_notes, payload.annotation_id)
     if errors:
         return _validation_error(errors)
     create_audit_log(
@@ -484,7 +525,7 @@ def save_qa_draft(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only tasks awaiting review can be edited.",
         )
-    crud.save_qa_draft(db, task, current_user, payload.data, payload.qa_notes, payload.elapsed_seconds)
+    crud.save_qa_draft(db, task, current_user, payload.data, payload.qa_notes, payload.elapsed_seconds, payload.annotation_id)
     # Slim acknowledgement (the reviewer already has the task + annotations).
     return {
         "task_id": str(task.id),

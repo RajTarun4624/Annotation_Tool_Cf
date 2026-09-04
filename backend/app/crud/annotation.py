@@ -321,16 +321,18 @@ def agreement_level(agreement: dict[str, Any]) -> str | None:
 
 
 def qa_draft_of(task: Task, user_id: str | None = None) -> dict[str, Any] | None:
-    """The reviewer's saved-but-not-finalised QA form (``tasks.draft_data``),
-    or None. When ``user_id`` is given only that reviewer's own draft is
-    returned - another reviewer's partial work is never pre-filled."""
+    """The reviewer's saved QA session on this task (``tasks.draft_data``):
+    which annotator's response they were editing, their notes and elapsed
+    time. Response edits themselves live on the responses. None when there is
+    no session, or (with ``user_id``) when it belongs to another reviewer."""
     d = task.draft_data if isinstance(task.draft_data, dict) else None
-    if not d or not isinstance(d.get("data"), dict):
+    if not d or not (d.get("annotation_id") or isinstance(d.get("data"), dict)):
         return None
     if user_id and str(d.get("user_id") or "") != str(user_id):
         return None
     return {
-        "data": d.get("data") or {},
+        "annotation_id": str(d.get("annotation_id") or "") or None,
+        "data": d.get("data") if isinstance(d.get("data"), dict) else {},  # legacy QA-answer drafts
         "qa_notes": str(d.get("qa_notes") or ""),
         "elapsed_seconds": int(d.get("elapsed_seconds") or 0),
         "user_id": str(d.get("user_id") or ""),
@@ -363,6 +365,11 @@ def qa_task_payload(task: Task, user_id: str | None = None) -> dict[str, Any]:
                 "elapsed_seconds": int(a.elapsed_seconds or 0),
                 "data": a.data if isinstance(a.data, dict) else {},
                 "output": _derive_output(a.data),
+                # QA edits this response in place; these say whether and by whom.
+                "edited": a.qa_edited_at is not None,
+                "qa_edited_by_name": a.qa_edited_by_name or None,
+                "qa_edited_at": a.qa_edited_at,
+                "original_data": a.original_data if isinstance(a.original_data, dict) else None,
             }
             for idx, a in enumerate(annotations, 1)
         ],
@@ -969,6 +976,47 @@ def ensure_qa_queue(db: Session, prod: Queue, created_by: uuid.UUID | None = Non
     return qa
 
 
+def _sync_output_row(db: Session, task: Task, ann: TaskAnnotation, clean: dict[str, Any], now: datetime) -> TaskOutput:
+    """Mirror one response into the flat ``tasks_output`` table (one row per
+    response). Used on submit and again whenever QA edits the response."""
+    derived = _derive_output(clean)
+    sev = clean.get("severity") if isinstance(clean.get("severity"), dict) else {}
+    out_row = db.query(TaskOutput).filter(TaskOutput.annotation_id == ann.id).first()
+    if out_row is None:
+        out_row = TaskOutput(
+            id=uuid.uuid4(), annotation_id=ann.id, task_id=task.id, user_id=ann.user_id,
+            queue_id=task.queue_id, created_at=now, status="submitted",
+        )
+        db.add(out_row)
+    out_row.user_name = ann.user_name or out_row.user_name
+    out_row.dataset = task.dataset or out_row.dataset or ""
+    out_row.input_text = task.input_text or out_row.input_text or ""
+    out_row.data_type = clean.get("data_type")
+    out_row.data_structure = clean.get("data_structure")
+    out_row.attack_type = clean.get("attack_type") or []
+    out_row.attack_subcategory = clean.get("attack_subcategory") or []
+    out_row.domain = clean.get("domain")
+    out_row.role = ", ".join(clean.get("role") or [])
+    out_row.verified = bool(clean.get("verified"))
+    out_row.language = clean.get("language") or "en"
+    out_row.document_edited = bool(clean.get("document_edited"))
+    out_row.source_description = clean.get("source_description") or ""
+    out_row.severity_j = int(sev.get("J") or 0)
+    out_row.severity_i = int(sev.get("I") or 0)
+    out_row.severity_l = int(sev.get("L") or 0)
+    out_row.intention = clean.get("intention")
+    out_row.source = clean.get("source") or task.source or "real_user"
+    out_row.jailbreak = derived["jailbreak"]
+    out_row.prompt_injection = derived["prompt_injection"]
+    out_row.prompt_leakage = derived["prompt_leakage"]
+    out_row.annotation_data = clean
+    out_row.elapsed_seconds = int(ann.elapsed_seconds or 0)
+    out_row.status = "submitted"
+    out_row.submitted_at = ann.submitted_at or now
+    out_row.updated_at = now
+    return out_row
+
+
 def submit_annotation(
     db: Session,
     task: Task,
@@ -1025,78 +1073,7 @@ def submit_annotation(
         ann.last_seen_at = now
         ann.updated_at = now
     db.flush()
-
-    # Record in tasks_output table
-    derived = _derive_output(clean)
-    sev = clean.get("severity") if isinstance(clean.get("severity"), dict) else {}
-    out_row = (
-        db.query(TaskOutput)
-        .filter(TaskOutput.annotation_id == ann.id)
-        .first()
-    )
-    if out_row is None:
-        out_row = TaskOutput(
-            id=uuid.uuid4(),
-            annotation_id=ann.id,
-            task_id=task.id,
-            user_id=uid,
-            user_name=_user_name(user),
-            queue_id=task.queue_id,
-            dataset=task.dataset or "",
-            input_text=task.input_text or "",
-            data_type=clean.get("data_type"),
-            data_structure=clean.get("data_structure"),
-            attack_type=clean.get("attack_type") or [],
-            attack_subcategory=clean.get("attack_subcategory") or [],
-            domain=clean.get("domain"),
-            role=", ".join(clean.get("role") or []),
-            verified=bool(clean.get("verified")),
-            language=clean.get("language") or "en",
-            document_edited=bool(clean.get("document_edited")),
-            source_description=clean.get("source_description") or "",
-            severity_j=int(sev.get("J") or 0),
-            severity_i=int(sev.get("I") or 0),
-            severity_l=int(sev.get("L") or 0),
-            intention=clean.get("intention"),
-            source=clean.get("source") or task.source or "real_user",
-            jailbreak=derived["jailbreak"],
-            prompt_injection=derived["prompt_injection"],
-            prompt_leakage=derived["prompt_leakage"],
-            annotation_data=clean,
-            elapsed_seconds=max(0, int(elapsed_seconds or 0)),
-            status="submitted",
-            submitted_at=now,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(out_row)
-    else:
-        out_row.user_name = _user_name(user) or out_row.user_name
-        out_row.dataset = task.dataset or out_row.dataset
-        out_row.input_text = task.input_text or out_row.input_text
-        out_row.data_type = clean.get("data_type")
-        out_row.data_structure = clean.get("data_structure")
-        out_row.attack_type = clean.get("attack_type") or []
-        out_row.attack_subcategory = clean.get("attack_subcategory") or []
-        out_row.domain = clean.get("domain")
-        out_row.role = ", ".join(clean.get("role") or [])
-        out_row.verified = bool(clean.get("verified"))
-        out_row.language = clean.get("language") or "en"
-        out_row.document_edited = bool(clean.get("document_edited"))
-        out_row.source_description = clean.get("source_description") or ""
-        out_row.severity_j = int(sev.get("J") or 0)
-        out_row.severity_i = int(sev.get("I") or 0)
-        out_row.severity_l = int(sev.get("L") or 0)
-        out_row.intention = clean.get("intention")
-        out_row.source = clean.get("source") or task.source or "real_user"
-        out_row.jailbreak = derived["jailbreak"]
-        out_row.prompt_injection = derived["prompt_injection"]
-        out_row.prompt_leakage = derived["prompt_leakage"]
-        out_row.annotation_data = clean
-        out_row.elapsed_seconds = max(0, int(elapsed_seconds or 0))
-        out_row.status = "submitted"
-        out_row.submitted_at = now
-        out_row.updated_at = now
+    _sync_output_row(db, task, ann, clean, now)
 
     submitted = int(
         db.query(func.count(A.id))
@@ -1343,32 +1320,96 @@ def touch_qa_lease(db: Session, task: Task, user: dict[str, Any]) -> bool:
     return bool(n)
 
 
-def save_qa_draft(
-    db: Session,
-    task: Task,
-    user: dict[str, Any],
-    data: dict[str, Any],
-    qa_notes: str,
-    elapsed_seconds: int,
-) -> None:
-    """Store the reviewer's in-progress final form (Save / Stop and resume).
-    Requires the QA lease (taken here when free)."""
-    now = _now()
-    task = _lock_task(db, task.id) or task
-    if task.status != "submitted":
-        raise ConflictError("This task is no longer awaiting review.")
-    _take_qa_lease(db, task, user, now)
+def _qa_session(task: Task, user: dict[str, Any], annotation_id: str | None, qa_notes: str, elapsed_seconds: int, now: datetime) -> None:
+    """Remember the reviewer's QA session on the task (which response they are
+    editing, notes, elapsed) so Stop and resume later comes back to it."""
     task.draft_data = {
-        "data": data if isinstance(data, dict) else {},
+        "annotation_id": str(annotation_id) if annotation_id else None,
         "qa_notes": qa_notes or "",
         "elapsed_seconds": max(0, int(elapsed_seconds or 0)),
         "user_id": str(user["id"]),
         "user_name": _user_name(user),
         "updated_at": now.isoformat(),
     }
+
+
+def save_qa_draft(
+    db: Session,
+    task: Task,
+    user: dict[str, Any],
+    data: dict[str, Any] | None,
+    qa_notes: str,
+    elapsed_seconds: int,
+    annotation_id: str | None = None,
+) -> None:
+    """Save the reviewer's QA session (notes, elapsed, which response is open).
+    ``data`` is ignored - response edits go through ``edit_qa_response``.
+    Requires the QA lease (taken here when free)."""
+    now = _now()
+    task = _lock_task(db, task.id) or task
+    if task.status != "submitted":
+        raise ConflictError("This task is no longer awaiting review.")
+    _take_qa_lease(db, task, user, now)
+    _qa_session(task, user, annotation_id, qa_notes, elapsed_seconds, now)
     task.updated_at = now
     db.commit()
     db.refresh(task)
+
+
+def _find_response(task: Task, annotation_id: str) -> TaskAnnotation:
+    aid = _parse_uuid(annotation_id)
+    for a in task.annotations or []:
+        if a.id == aid and a.status in ("submitted", "returned"):
+            return a
+    raise ConflictError("That annotator response no longer exists on this task.")
+
+
+def _apply_response_edit(ann: TaskAnnotation, user: dict[str, Any], clean: dict[str, Any], now: datetime) -> bool:
+    """Write ``clean`` into the response, keeping the annotator's original the
+    first time it changes. Returns True when something changed."""
+    current = ann.data if isinstance(ann.data, dict) else {}
+    if normalise_annotation(current) == clean:
+        return False
+    if ann.original_data is None:
+        ann.original_data = current
+    ann.data = clean
+    ann.qa_edited_by = _parse_uuid(user["id"])
+    ann.qa_edited_by_name = _user_name(user)
+    ann.qa_edited_at = now
+    ann.updated_at = now
+    return True
+
+
+def edit_qa_response(
+    db: Session,
+    task: Task,
+    annotation_id: str,
+    user: dict[str, Any],
+    data: dict[str, Any],
+    qa_notes: str = "",
+    elapsed_seconds: int = 0,
+) -> TaskAnnotation:
+    """QA edits ONE annotator's response in place (autosave / Save).
+
+    Under the task row lock and the QA lease: the response's data is replaced
+    (original kept in ``original_data`` on the first edit), its tasks_output
+    mirror is refreshed, and the reviewer's session pointer is updated. The
+    data may be partial while the reviewer is still working; every response
+    is validated in full at finalize."""
+    now = _now()
+    task = _lock_task(db, task.id) or task
+    if task.status != "submitted":
+        raise ConflictError("This task is no longer awaiting review.")
+    _take_qa_lease(db, task, user, now)
+    ann = _find_response(task, annotation_id)
+    clean = normalise_annotation(data if isinstance(data, dict) else {})
+    if _apply_response_edit(ann, user, clean, now):
+        _sync_output_row(db, task, ann, clean, now)
+    _qa_session(task, user, str(ann.id), qa_notes, elapsed_seconds, now)
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+    return ann
 
 
 def release_qa_task(db: Session, task: Task, user: dict[str, Any] | None = None, *, force: bool = False) -> None:
@@ -1388,8 +1429,22 @@ def release_qa_task(db: Session, task: Task, user: dict[str, Any] | None = None,
     db.refresh(task)
 
 
-def preview_record(task: Task, data: dict[str, Any]) -> dict[str, Any]:
+def preview_record(task: Task, data: dict[str, Any], annotation_id: str | None = None) -> dict[str, Any]:
+    """The customer record as it would be stored on finalize. With
+    ``annotation_id`` the given data is applied to that response in memory
+    and the final is the majority of the responses; otherwise (legacy) the
+    data itself is the final."""
     annotations = submitted_annotations(task)
+    if annotation_id:
+        aid = _parse_uuid(annotation_id)
+        clean = normalise_annotation(data if isinstance(data, dict) else {})
+        shadow = [
+            {"data": clean if a.id == aid else a.data, "user_name": a.user_name, "user_id": a.user_id,
+             "submitted_at": a.submitted_at, "created_at": a.created_at, "id": a.id}
+            for a in annotations
+        ]
+        final = compute_consensus(task, shadow).get("majority") or {}
+        return build_record(task, shadow, final)
     return build_record(task, annotations, normalise_annotation(data))
 
 
@@ -1425,11 +1480,17 @@ def finalize_task(
     user: dict[str, Any],
     data: dict[str, Any],
     qa_notes: str = "",
+    annotation_id: str | None = None,
 ) -> list[str]:
-    """Validate + store the final annotation/record; task -> approved.
-    Returns validation errors (empty on success). Runs under the task row
-    lock: a task that is no longer awaiting review, or held by another
-    reviewer, raises ``ConflictError``."""
+    """Finalise the task -> approved. Returns validation errors (empty on
+    success). Runs under the task row lock: a task that is no longer awaiting
+    review, or held by another reviewer, raises ``ConflictError``.
+
+    With ``annotation_id`` (the QA "edit the annotator's response" model):
+    ``data`` is the reviewer's current version of THAT response - it is
+    validated, written into the response, every response is validated in
+    full, and the stored final is the majority of the (corrected) responses.
+    Without it (legacy): ``data`` is stored as the final answer itself."""
     errors = validate_annotation(data)
     if errors:
         return errors
@@ -1440,10 +1501,26 @@ def finalize_task(
     if task.status != "submitted":
         raise ConflictError("This task was already reviewed by someone else.")
     _take_qa_lease(db, task, user, now)
-    annotations = submitted_annotations(task)
 
-    task.final_data = clean
-    task.final_record = build_record(task, annotations, clean)
+    if annotation_id:
+        ann = _find_response(task, annotation_id)
+        if _apply_response_edit(ann, user, clean, now):
+            _sync_output_row(db, task, ann, clean, now)
+        annotations = submitted_annotations(task)
+        problems: list[str] = []
+        for idx, a in enumerate(annotations, 1):
+            for msg in validate_annotation(a.data):
+                problems.append(f"{a.user_name or f'Annotator {idx}'}: {msg}")
+        if problems:
+            db.commit()  # keep the edit that was made; the reviewer fixes the rest
+            return problems
+        final = compute_consensus(task, annotations).get("majority") or clean
+    else:
+        annotations = submitted_annotations(task)
+        final = clean
+
+    task.final_data = final
+    task.final_record = build_record(task, annotations, final)
     task.status = "approved"
     task.finalized_by = _parse_uuid(user["id"])
     task.finalized_by_name = _user_name(user)

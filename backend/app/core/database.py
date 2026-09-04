@@ -139,10 +139,11 @@ def _schema_needs_patch(conn) -> bool:
           EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='task_annotations' AND column_name='last_seen_at') AS seen_col,
           EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='qa_owner_id') AS owner_col,
           EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uq_task_annotations_open') AS open_uq,
-          EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_audit_logs_timestamp') AS audit_ix
+          EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_audit_logs_timestamp') AS audit_ix,
+          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='task_annotations' AND column_name='qa_edited_at') AS edit_col
         """
     ).one()
-    return bool(row.old_uq) or not all((row.out_col, row.seen_col, row.owner_col, row.open_uq, row.audit_ix))
+    return bool(row.old_uq) or not all((row.out_col, row.seen_col, row.owner_col, row.open_uq, row.audit_ix, row.edit_col))
 
 
 def ensure_indexes() -> None:

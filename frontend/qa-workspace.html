@@ -49,8 +49,6 @@
   const BTN_OUTLINE = BTN_BASE + "border:1px solid #94a3b8;background:#fff;color:#000000;";
   const BTN_PRIMARY = BTN_BASE + "padding:0 14px;border:0;background:#1d4ed8;color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08);";
   const BTN_SAVE = BTN_BASE + "padding:0 12px;border:1px solid #94a3b8;background:#fff;color:#000000;";
-  const BTN_SMALL = BTN_BASE + "border:1px solid #cbd5e1;background:#fff;color:#0f172a;font-weight:500;";
-  const LINK_BTN = "border:0;background:none;padding:0;font-family:inherit;font-size:12.5px;font-weight:600;color:#475569;cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:color .15s;";
   const BADGE_BASE =
     "display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:600;" +
     "line-height:1;white-space:nowrap;";
@@ -60,31 +58,9 @@
   const PROMPT_BOX =
     "white-space:pre-wrap;word-break:break-word;font-size:14.5px;line-height:1.7;color:#000000;font-weight:500;background:#f8fafc;" +
     "border:1px solid #cbd5e1;border-radius:8px;padding:18px;margin:0;font-family:inherit;";
-  const CODE_BOX =
-    "margin:0;font-family:" + MONO + ";font-size:12px;line-height:1.55;color:#0f172a;background:#f8fafc;border:1px solid #e2e8f0;" +
-    "border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;";
   const PREFILL_CHIP =
     "display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 4px;border-radius:999px;border:1px solid #cbd5e1;" +
     "background:#fff;color:#334155;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;max-width:220px;transition:.15s;";
-
-  // Answer fields compared when matching the form against an annotator's response.
-  const ROWS = [
-    { key: "data_type", label: "Data type", agr: "data_type" },
-    { key: "data_structure", label: "Data structure", agr: "data_structure" },
-    { key: "attack_type", label: "Attack type", agr: "attack_type" },
-    { key: "attack_subcategory", label: "Subcategory", agr: "attack_subcategory" },
-    { key: "domain", label: "Domain", agr: "domain" },
-    { key: "role", label: "Role", agr: "role" },
-    { key: "verified", label: "Verified", agr: "verified" },
-    { key: "language", label: "Language", agr: "language" },
-    { key: "document_edited", label: "Document edited", agr: "document_edited" },
-    { key: "severity_J", label: "Severity J", agr: "severity_J" },
-    { key: "severity_I", label: "Severity I", agr: "severity_I" },
-    { key: "severity_L", label: "Severity L", agr: "severity_L" },
-    { key: "intention", label: "Intention", agr: "intention" },
-    { key: "source", label: "Source", agr: "source" },
-    { key: "source_description", label: "Source description", agr: null },
-  ];
 
   const userEmail = profile.email || profile.username || profile.full_name || "Reviewer";
 
@@ -99,7 +75,7 @@
     detail: null,         // GET /workspace/qa/tasks/{id} payload
     form: null,           // AnnotationForm handle
     notesEl: null,
-    prefill: null,        // annotation response id (Annotator 1 by default) | "custom"
+    editing: null,        // id of the annotator response loaded in the form (Annotator 1 by default)
     lastSavedJson: "",    // form JSON last known by the server (draft)
     lastSavedNotes: "",
     dirty: false,
@@ -110,8 +86,6 @@
     elapsed: 0,
     timerId: null,
     timerRunning: false,
-    previewOpen: false,
-    previewStale: false,
   };
 
   /* ── Skeleton DOM (identical chrome to workspace.html) ───────────────────── */
@@ -236,13 +210,6 @@
     const r = s % 60;
     return "of " + m + " Min " + String(r).padStart(2, "0") + " Sec";
   }
-  const toList = (v) => (Array.isArray(v) ? v.map((x) => String(x)) : typeof v === "string" && v ? v.split(",").map((x) => x.trim()).filter(Boolean) : []);
-  const toBool = (v) => (typeof v === "boolean" ? v : typeof v === "string" ? /^(true|1|yes|verified)$/i.test(v.trim()) : !!v);
-  const sevOf = (data, k) => {
-    const s = data && data.severity && typeof data.severity === "object" ? data.severity[k] : null;
-    const n = Number(s);
-    return Number.isFinite(n) ? n : 0;
-  };
   function buildLabels(tax) {
     const out = {};
     if (!tax || typeof tax !== "object") return out;
@@ -262,14 +229,6 @@
     const map = state.labels[field] || {};
     return map[String(value)] != null ? map[String(value)] : String(value);
   };
-  function cellKey(key, data) {
-    const d = data && typeof data === "object" ? data : {};
-    if (key === "attack_type" || key === "attack_subcategory" || key === "role") return toList(d[key]).slice().sort().join("|");
-    if (key === "verified" || key === "document_edited") return d[key] == null ? "" : String(toBool(d[key]));
-    if (key.indexOf("severity_") === 0) return String(sevOf(d, key.slice(-1)));
-    return d[key] == null ? "" : String(d[key]).trim();
-  }
-  const sameAnswers = (a, b) => ROWS.every((r) => cellKey(r.key, a) === cellKey(r.key, b));
   const annotations = () => (state.detail && Array.isArray(state.detail.annotations) ? state.detail.annotations.slice().sort((a, b) => (a.slot || 0) - (b.slot || 0)) : []);
   // Display name per response: the same annotator may answer more than once -> "Name (response 2)".
   function annotatorLabel(a) {
@@ -463,14 +422,18 @@
         (task.finalized_at ? fmt.dateTime(task.finalized_at) + " · " : "") + "read-only.");
     } else if (!d.editable) {
       html = bannerHtml("slate", "Read-only", "This task is " + (task.status || "not editable") + ".");
-    } else if (state.dirty) {
-      html = bannerHtml("amber", "Unsaved changes", "Autosave runs shortly, or press Save. Submit final when the answers are right.");
-    } else if (d.qa_draft) {
-      html = bannerHtml("blue", "Draft resumed", "Your saved QA answers were restored" + (d.qa_draft.updated_at ? " (" + fmt.dateTime(d.qa_draft.updated_at) + ")" : "") + ".");
     } else {
-      const first = defaultPrefill();
-      html = bannerHtml("blue", "Awaiting your review",
-        (first ? "The answers are pre-filled from " + first.name + ". " : "") + "Pick an annotator above to load their answers, adjust anything, then Submit final.");
+      const cur = currentCandidate();
+      const who = cur ? cur.name : "the annotator";
+      if (state.dirty) {
+        html = bannerHtml("amber", "Editing " + who + "'s response", "Unsaved changes. Autosave runs shortly, or press Save. Your edits replace this annotator's answers.");
+      } else if (d.qa_draft && d.qa_draft.annotation_id) {
+        html = bannerHtml("blue", "Resumed: editing " + who + "'s response",
+          "Picked up where you left off" + (d.qa_draft.updated_at ? " (" + fmt.dateTime(d.qa_draft.updated_at) + ")" : "") + ". Pick another annotator above to edit theirs, then Submit final.");
+      } else {
+        html = bannerHtml("blue", "Editing " + who + "'s response",
+          "Changes you make are saved into this annotator's response. Pick another annotator above to edit theirs, then Submit final.");
+      }
     }
     els.banner.innerHTML = html;
   }
@@ -483,50 +446,63 @@
       '<ul style="margin:6px 0 0;padding-left:18px;font-weight:500">' + list.map((m) => "<li>" + esc(m) + "</li>").join("") + "</ul></div>";
   }
 
-  // Prefill chips: one per annotator response submitted in production (no majority chip).
-  // Annotator 1 is loaded by default; clicking a chip loads that person's answers into the
-  // form (still editable). The active chip follows the form.
+  // Annotator responses: one chip per response submitted in production. The active
+  // chip is the response currently loaded in the form; edits are saved INTO that
+  // annotator's response (the annotator's original answers are kept server-side).
   function prefillCandidates() {
-    return annotations().map((a) => ({ key: a.id || a.user_id || "slot-" + a.slot, name: annotatorLabel(a), data: a.data || {} }));
+    return annotations().map((a) => ({
+      key: a.id || a.user_id || "slot-" + a.slot, id: a.id, name: annotatorLabel(a), data: a.data || {},
+      edited: !!a.edited, editedBy: a.qa_edited_by_name || "",
+    }));
   }
   const defaultPrefill = () => prefillCandidates()[0] || null;
-  function detectPrefill() {
-    if (!state.form) return;
-    const value = state.form.getValue();
-    const hit = prefillCandidates().find((c) => sameAnswers(value, c.data));
-    state.prefill = hit ? hit.key : "custom";
-  }
+  const currentCandidate = () => prefillCandidates().find((c) => c.key === state.editing) || null;
   function paintPrefill() {
     const d = state.detail;
     els.prefill.innerHTML = "";
     if (!d) return;
     const editable = !!d.editable;
+    const cur = currentCandidate();
     const wrap = App.el('<div style="display:flex;flex-direction:column;gap:8px;min-width:0"></div>');
     wrap.appendChild(App.el(
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">' + App.sectionLabel("Load answers from") +
-      '<span style="font-size:11px;color:#94a3b8">' + (state.prefill === "custom" ? "edited by you" : "selected answers shown below") + "</span></div>",
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">' + App.sectionLabel("Annotator responses") +
+      '<span style="font-size:11px;color:#94a3b8">' + (cur ? "editing " + esc(cur.name) + "'s response" : "pick a response to edit") + "</span></div>",
     ));
     const row = App.el('<div style="display:flex;flex-wrap:wrap;gap:6px"></div>');
     prefillCandidates().forEach((c) => {
-      const active = state.prefill === c.key;
+      const active = state.editing === c.key;
       const btn = App.el(
-        '<button type="button" data-hover="prefill"' + (active ? ' data-active="1"' : "") + ' title="' + esc(c.name) + '" style="' + PREFILL_CHIP +
+        '<button type="button" data-hover="prefill"' + (active ? ' data-active="1"' : "") +
+          ' title="' + esc(c.name) + (c.edited ? " · edited by " + esc(c.editedBy || "QA") : "") + '" style="' + PREFILL_CHIP +
           (active ? "border-color:#1d4ed8;background:#eff6ff;color:#1d4ed8;" : "") + (!editable ? "cursor:default;opacity:.7;" : "") + '">' +
           App.avatarInitial(c.name, 20) + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(c.name) + "</span>" +
+          (c.edited ? '<span style="font-size:10px;font-weight:700;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:999px;padding:1px 6px">edited</span>' : "") +
           (active ? App.icon("AiOutlineCheck", { size: 12, color: "#1d4ed8" }) : "") + "</button>",
       );
-      if (editable) btn.addEventListener("click", () => applyPrefill(c));
+      if (editable) btn.addEventListener("click", () => switchResponse(c));
       row.appendChild(btn);
     });
     wrap.appendChild(row);
     els.prefill.appendChild(wrap);
   }
-  function applyPrefill(c) {
-    if (!state.form || !isEditable()) return;
-    state.form.setValue(JSON.parse(JSON.stringify(c.data || {})));
-    state.prefill = c.key;
+  // Switch to another annotator's response: pending edits on the current one are
+  // saved first, then the other response is loaded into the form.
+  async function switchResponse(c) {
+    if (!state.form || !isEditable() || c.key === state.editing) return;
+    autosave.cancel();
+    if (state.dirty) {
+      const ok = await saveDraft({ silent: true });
+      if (!ok) return;
+    }
+    await awaitPendingSave();
+    const fresh = prefillCandidates().find((x) => x.key === c.key) || c;
+    state.editing = fresh.key;
+    state.form.setValue(JSON.parse(JSON.stringify(fresh.data || {})));
+    state.lastSavedJson = currentValueJson();
+    state.dirty = false;
+    showSubmitErrors(null);
     paintPrefill();
-    onFormChange();
+    paintBanner();
   }
 
   function mountForm() {
@@ -537,15 +513,17 @@
     els.json.innerHTML = "";
     showSubmitErrors(null);
     if (!d) { els.prefill.innerHTML = ""; return; }
-    const task = d.task || {};
     const editable = !!d.editable;
     const draft = d.qa_draft && typeof d.qa_draft === "object" ? d.qa_draft : null;
-    // Pre-populated: the reviewer's saved draft, else the stored final, else Annotator 1's answers.
-    const first = defaultPrefill();
+    // The form shows ONE annotator's response: the one this reviewer was editing
+    // (saved session), else Annotator 1. For a finalised task the stored final is shown.
+    const cands = prefillCandidates();
+    const resumed = draft && draft.annotation_id ? cands.find((c) => c.key === draft.annotation_id) : null;
+    const start = resumed || cands[0] || null;
+    state.editing = start ? start.key : null;
     const initial =
-      (draft && draft.data && typeof draft.data === "object" && Object.keys(draft.data).length ? draft.data : null) ||
-      (d.final && typeof d.final === "object" && Object.keys(d.final).length ? d.final : null) ||
-      (first && first.data && Object.keys(first.data).length ? first.data : null) ||
+      (!editable && d.final && typeof d.final === "object" && Object.keys(d.final).length ? d.final : null) ||
+      (start && start.data && Object.keys(start.data).length ? start.data : null) ||
       AnnotationForm.emptyValue(state.taxonomy);
 
     state.form = AnnotationForm.mount(els.form, {
@@ -554,87 +532,12 @@
       readOnly: !editable,
       onChange: onFormChange,
     });
+    state.notesEl = null;
 
-    // QA notes
-    const notesSec = App.el('<div style="display:flex;flex-direction:column;gap:8px"></div>');
-    notesSec.appendChild(App.el(App.sectionLabel("QA notes")));
-    const ta = App.el(
-      '<textarea rows="3" data-hover="fieldfocus" placeholder="Optional notes stored with the final record…" style="' +
-        T.INPUT_STYLE.replace("height:36px;", "height:auto;min-height:78px;") + 'padding:6px 11px;line-height:1.5;resize:vertical"></textarea>',
-    );
-    ta.value = draft ? draft.qa_notes || "" : task.qa_notes || "";
-    ta.setAttribute("aria-label", "QA notes");
-    if (!editable) { ta.readOnly = true; ta.style.background = "#f8fafc"; ta.style.color = "#334155"; }
-    ta.addEventListener("input", onFormChange);
-    notesSec.appendChild(ta);
-    els.notes.appendChild(notesSec);
-    state.notesEl = ta;
-
-    // JSON preview / stored record
-    const jsonSec = App.el('<div style="display:flex;flex-direction:column;gap:8px;min-width:0"></div>');
-    const head = App.el('<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"></div>');
-    head.appendChild(App.el(App.sectionLabel(editable ? "JSON preview" : "Stored record")));
-    const tools = App.el('<div style="display:flex;align-items:center;gap:10px"></div>');
-    const hint = App.el('<button type="button" data-hover="linkbtn" style="' + LINK_BTN + 'display:none;color:#b45309">' + App.icon("AiOutlineReload", { size: 12 }) + "Refresh — form changed</button>");
-    const pbtn = App.el('<button type="button" data-hover="btn-default" style="' + BTN_SMALL + '">' + App.icon("AiOutlineFileSearch", { size: 13 }) + " JSON preview</button>");
-    tools.appendChild(hint); tools.appendChild(pbtn);
-    head.appendChild(tools);
-    jsonSec.appendChild(head);
-    const box = App.el('<pre style="' + CODE_BOX + 'display:none"></pre>');
-    jsonSec.appendChild(box);
-    els.json.appendChild(jsonSec);
-    state.preview = { hint, btn: pbtn, box };
-    hint.addEventListener("click", refreshPreview);
-    pbtn.addEventListener("click", () => { if (state.previewOpen) hideRecord(); else refreshPreview(); });
-    state.previewOpen = false;
-    state.previewStale = false;
-    if (!editable) showRecord(d.record);
-
-    state.lastSavedJson = draft ? currentValueJson() : "";
-    state.lastSavedNotes = ta.value;
+    state.lastSavedJson = currentValueJson();
+    state.lastSavedNotes = "";
     state.dirty = false;
-    detectPrefill();
     paintPrefill();
-  }
-
-  function showRecord(record) {
-    const p = state.preview; if (!p) return;
-    let text = "";
-    try { text = JSON.stringify(record == null ? {} : record, null, 2); } catch (e) { text = String(record); }
-    p.box.textContent = text;
-    p.box.style.display = "block";
-    state.previewOpen = true;
-    state.previewStale = false;
-    p.hint.style.display = "none";
-    p.btn.lastChild.textContent = " Hide JSON";
-  }
-  function hideRecord() {
-    const p = state.preview; if (!p) return;
-    p.box.style.display = "none";
-    state.previewOpen = false;
-    p.hint.style.display = "none";
-    p.btn.lastChild.textContent = " JSON preview";
-  }
-  async function refreshPreview() {
-    const d = state.detail;
-    if (!d || !state.currentId || !state.preview) return;
-    if (!isEditable()) { showRecord(d.record); return; }
-    const seq = state.loadSeq;
-    const id = state.currentId;
-    App.setLoading(state.preview.btn, true);
-    try {
-      const res = await App.api("/workspace/qa/tasks/" + encodeURIComponent(id) + "/preview", {
-        method: "POST",
-        body: { data: state.form ? state.form.getValue() : d.final || {} },
-      });
-      if (seq !== state.loadSeq || id !== state.currentId) return;
-      showRecord(res && res.record != null ? res.record : res);
-    } catch (err) {
-      if (seq !== state.loadSeq || id !== state.currentId) return;
-      App.toast.error(err.message || "Unable to build the JSON preview.");
-    } finally {
-      if (seq === state.loadSeq && id === state.currentId && state.preview) App.setLoading(state.preview.btn, false);
-    }
   }
 
   /* ── Draft saving (Save / autosave / Stop and resume) ────────────────────── */
@@ -643,52 +546,54 @@
   function onFormChange() {
     if (!isEditable()) return;
     showSubmitErrors(null);
-    const dirty = currentValueJson() !== state.lastSavedJson || currentNotes() !== state.lastSavedNotes;
-    const before = state.prefill;
-    detectPrefill();
-    if (before !== state.prefill) paintPrefill();
+    const dirty = currentValueJson() !== state.lastSavedJson;
     if (dirty !== state.dirty) { state.dirty = dirty; paintBanner(); }
-    if (state.previewOpen && state.preview) { state.previewStale = true; state.preview.hint.style.display = "inline-flex"; }
     if (dirty) autosave();
   }
 
   async function awaitPendingSave() {
     if (state.saving && state.savePromise) { try { await state.savePromise; } catch (e) { /* toasted */ } }
   }
+  // Save = write the form INTO the selected annotator's response (autosave / Save button).
   function saveDraft(opts) {
     const o = opts || {};
-    if (!isEditable() || !state.form) return Promise.resolve(false);
+    if (!isEditable() || !state.form || !state.editing) return Promise.resolve(false);
     if (state.saving) { state.saveAgain = true; return state.savePromise || Promise.resolve(false); }
     const taskId = state.currentId;
+    const annId = state.editing;
     const seq = state.loadSeq;
     const data = state.form.getValue();
     const json = JSON.stringify(data);
-    const notes = currentNotes();
     state.saving = true;
     if (!o.silent) App.setLoading(els.save, true);
     state.savePromise = (async () => {
       try {
-        const ack = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/draft", {
+        const ack = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/annotations/" + encodeURIComponent(annId), {
           method: "PUT",
-          body: { data, qa_notes: notes, elapsed_seconds: Math.floor(state.elapsed) },
+          body: { data, qa_notes: "", elapsed_seconds: Math.floor(state.elapsed) },
         });
         if (seq !== state.loadSeq || taskId !== state.currentId) return true;
-        // Slim acknowledgement: only the draft + editable flag change on a save.
+        // Reflect the saved response locally so chip switching shows the edited answers.
         if (ack && typeof ack === "object") {
-          state.detail = Object.assign({}, state.detail, { qa_draft: ack.qa_draft || state.detail.qa_draft, editable: ack.editable !== false });
+          (state.detail.annotations || []).forEach((a) => {
+            if (a.id === annId) { a.data = ack.data || data; a.edited = !!ack.edited; a.qa_edited_by_name = ack.qa_edited_by_name || a.qa_edited_by_name; }
+          });
+          state.detail.editable = ack.editable !== false;
           if (state.detail.task && ack.status) state.detail.task.status = ack.status;
         }
-        state.lastSavedJson = json;
-        state.lastSavedNotes = notes;
-        state.dirty = currentValueJson() !== json || currentNotes() !== notes;
+        if (annId === state.editing) {
+          state.lastSavedJson = json;
+          state.dirty = currentValueJson() !== json;
+        }
+        paintPrefill();
         paintBanner();
         paintTopBar();
-        if (!o.silent) App.toast.success("Draft saved.");
+        if (!o.silent) App.toast.success("Response saved.");
         return true;
       } catch (err) {
         if (seq !== state.loadSeq) return false;
         if (isConflict(err)) { handleConflict(err, taskId); return false; }
-        App.toast.error(err.message || "Unable to save the draft.");
+        App.toast.error(err.message || "Unable to save the response.");
         return false;
       } finally {
         state.saving = false;
@@ -735,9 +640,11 @@
     if (!state.form) { App.toast.error("Annotation form is not ready."); return; }
     const errors = state.form.validate();
     if (errors && errors.length) return;
+    const cur = currentCandidate();
     const ok = await App.confirm({
-      title: "Submit final annotation?",
-      content: "The current answers become the final record for this task and the task is marked approved.",
+      title: "Submit final?",
+      content: (cur ? "Your edits are saved into " + cur.name + "'s response. " : "") +
+        "The final record is built from all annotator responses and the task is marked approved.",
       okText: "Submit final",
     });
     if (!ok) return;
@@ -752,7 +659,7 @@
       const data = state.form.getValue();
       const payload = await App.api("/workspace/qa/tasks/" + encodeURIComponent(taskId) + "/finalize", {
         method: "POST",
-        body: { data, qa_notes: currentNotes().trim() },
+        body: { data, qa_notes: "", annotation_id: state.editing },
       });
       if (seq !== state.loadSeq) return;
       state.dirty = false;

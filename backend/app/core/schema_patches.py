@@ -44,4 +44,12 @@ STATEMENTS_0006 = [
     "CREATE INDEX IF NOT EXISTS ix_audit_logs_timestamp ON audit_logs (timestamp)",
 ]
 
-ALL_STATEMENTS = STATEMENTS_0005 + STATEMENTS_0006
+# alembic 0007: QA edits a specific annotator's response in place; keep the audit trail.
+STATEMENTS_0007 = [
+    "ALTER TABLE task_annotations ADD COLUMN IF NOT EXISTS original_data JSONB NULL",
+    "ALTER TABLE task_annotations ADD COLUMN IF NOT EXISTS qa_edited_by UUID NULL REFERENCES users(id) ON DELETE SET NULL",
+    "ALTER TABLE task_annotations ADD COLUMN IF NOT EXISTS qa_edited_by_name VARCHAR NULL",
+    "ALTER TABLE task_annotations ADD COLUMN IF NOT EXISTS qa_edited_at TIMESTAMP NULL",
+]
+
+ALL_STATEMENTS = STATEMENTS_0005 + STATEMENTS_0006 + STATEMENTS_0007
