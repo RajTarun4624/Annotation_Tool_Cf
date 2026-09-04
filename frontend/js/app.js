@@ -463,11 +463,15 @@
     const a = document.createElement("a");
     a.href = url;
     a.download = name;
+    a.rel = "noopener";
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    // Revoking the object URL while the browser is still writing the file cancels
+    // the download and leaves an "Unconfirmed ....crdownload" behind for large
+    // exports. Keep the URL alive well past any realistic write time.
+    setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
     return name;
   }
 

@@ -97,8 +97,19 @@ def slugify(name: str | None) -> str:
     return slug or "queue"
 
 
+def safe_filename(name: str | None, fallback: str = "export") -> str:
+    """A download name that keeps the human-readable identifier as-is (case,
+    digits, underscores, hyphens, dots); spaces become underscores and any
+    other character is dropped. "Testing 2" -> "Testing_2",
+    "general_text_0122" -> "general_text_0122"."""
+    text = re.sub(r"\s+", "_", str(name or "").strip())
+    text = re.sub(r"[^A-Za-z0-9._-]+", "", text).strip("._-")
+    return text[:120] or fallback
+
+
 def export_filename(queue: Queue, fmt: str) -> str:
-    return f"{slugify(queue.name)}_results.{fmt}"
+    """Queue export downloads as `<queue name>.<fmt>`."""
+    return f"{safe_filename(queue.name, 'queue')}.{fmt}"
 
 
 def _parse_uuid(value: Any) -> uuid.UUID | None:
@@ -490,8 +501,8 @@ def export_single_task(db: Session, task: Task, fmt: str = "json") -> tuple[byte
         prod = db.query(Queue).filter(Queue.id == task.queue_id).first()
     required = int(prod.required_annotators or 3) if prod else 3
 
-    task_slug = slugify(task.dataset or str(task.id)[:8])
-    filename = f"task_{task_slug}.{fmt}"
+    # Single-task export downloads as `<task id>.<fmt>` (the dataset id shown in the UI).
+    filename = f"{safe_filename(task.dataset, str(task.id)[:8])}.{fmt}"
 
     if fmt == "jsonl":
         return to_jsonl([record]), "application/x-ndjson", filename

@@ -14,8 +14,8 @@
 </style>
 </head>
 <body style="margin:0">
-<script src="js/icons.js?v=20260903z"></script>
-<script src="js/app.js?v=20260903z"></script>
+<script src="js/icons.js?v=20260904a"></script>
+<script src="js/app.js?v=20260904a"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -688,7 +688,7 @@
     dlModal.addEventListener("click", async () => {
       App.setLoading(dlModal, true);
       try {
-        await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=json", "task_" + (row.dataset || row.id) + ".json");
+        await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=json", (row.dataset || row.id) + ".json");
         App.toast.success("Task record downloaded.");
       } catch (err) {
         App.toast.error(err.message || "Download failed.");
@@ -751,7 +751,7 @@
         close();
         App.setLoading(anchor, true);
         try {
-          await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=" + fmt, "task_" + (row.dataset || row.id) + "." + fmt);
+          await App.download("/tasks/" + encodeURIComponent(row.id) + "/export?fmt=" + fmt, (row.dataset || row.id) + "." + fmt);
           App.toast.success("Task exported (" + fmt.toUpperCase() + ").");
         } catch (err) {
           App.toast.error(err.message || "Export failed.");

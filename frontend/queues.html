@@ -17,8 +17,8 @@
   </style>
 </head>
 <body style="margin:0">
-<script src="js/icons.js?v=20260903z"></script>
-<script src="js/app.js?v=20260903z"></script>
+<script src="js/icons.js?v=20260904a"></script>
+<script src="js/app.js?v=20260904a"></script>
 <script>
 (async () => {
   const profile = await App.ensureSession();
@@ -606,9 +606,10 @@
         const scope = scopeSel.value || "final";
         App.setLoading(footer.okBtn, true);
         try {
+          // Server names the file after the queue; this is only the fallback.
           const name = await App.download(
             "/queues/" + encodeURIComponent(queue.id) + "/export/" + fmt + "?scope=" + encodeURIComponent(scope),
-            slug(queue.name) + "_results." + fmt,
+            String(queue.name || "queue").trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9._-]+/g, "") + "." + fmt,
           );
           App.toast.success("Exported " + name + ".");
           m.close();

@@ -543,7 +543,9 @@ def test_three_annotator_consensus_flow(client: TestClient, admin: dict) -> None
         rec = json.loads(lines[0])
         assert rec["dataset"] == f"flow_{suffix}_0001"
         assert "annotator_3" in rec
-        assert "_results" in response.headers.get("content-disposition", "")
+        # Queue exports download as "<queue name>.<fmt>" (spaces -> underscores).
+        assert 'filename="Flow_queue_' in response.headers.get("content-disposition", "")
+        assert response.headers.get("content-disposition", "").endswith('.jsonl"')
 
         response = client.get(_api(f"/queues/{queue_id}/export/json"), headers=headers)
         assert response.status_code == 200, response.text
