@@ -148,7 +148,7 @@
 
   function paintStart() {
     const resume = isResume();
-    const label = resume ? "Resume" : isProduction() ? "Start Working" : "Start QA Review";
+    const label = resume ? "Resume" : "Start Working";
     if (!state.starting) startBtn.textContent = label;
     startBtn.style.background = resume ? "#f97316" : "#1d4ed8";
     startBtn.setAttribute("data-hover", resume ? "btn-orange" : "btn-primary");
